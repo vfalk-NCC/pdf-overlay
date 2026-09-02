@@ -1,0 +1,7 @@
+{
+  "url": "https://din-domän.se/pdf-overlay/index.html",
+  "title": "PDF-overlay",
+  "icon": "https://din-domän.se/pdf-overlay/icon.png",
+  "description": "Placera och kalibrera PDF-planer/sektioner mot 3D-modellen med referenspunkter, och lås placeringen som en texturerad modell.",
+  "extensionType": ["3dviewer"]
+}

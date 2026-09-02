@@ -1,0 +1,1001 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PDF-overlay – Trimble Connect</title>
+<script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root{
+    --bg:#fff; --panel-bg:#f7f8fa; --border:#e2e4e8; --text:#1f2430; --text-muted:#6b7280;
+    --accent:#2563eb; --radius:10px; --shadow:0 2px 10px rgba(0,0,0,.08);
+    font-family:"Trimble Sans","Segoe UI",Roboto,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--text);font-size:13px;}
+  #app{display:flex;flex-direction:column;height:100%;}
+  header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+  header h1{font-size:14px;margin:0;font-weight:600;}
+  .status{font-size:11px;color:var(--text-muted);}
+  .toolbar{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  button{font:inherit;cursor:pointer;border:1px solid var(--border);background:#fff;padding:6px 10px;border-radius:8px;color:var(--text);}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  button.primary:disabled{opacity:.5;cursor:not-allowed;}
+  button.ghost{background:transparent;border-color:transparent;color:var(--text-muted);}
+  button.active{outline:2px solid var(--accent);}
+  button:hover:not(:disabled){filter:brightness(0.97);}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+
+  .hint{font-size:11.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.4;}
+  .row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;}
+  .row > div{flex:1;min-width:0;}
+  label{display:block;font-size:11.5px;color:var(--text-muted);margin:6px 0 3px;}
+  input[type=text], input[type=number], select{width:100%;font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:#fff;}
+  input[type=range]{width:100%;}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;margin:8px 0;}
+  .step{padding:12px;border-bottom:1px solid var(--border);background:var(--panel-bg);}
+  .step h3{font-size:12.5px;margin:0 0 8px;}
+  .step.disabled{opacity:.45;pointer-events:none;}
+  .wizard{display:none;flex-direction:column;border-bottom:2px solid var(--accent);}
+  .wizard.open{display:flex;}
+  .pillrow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;}
+  .pill{font-size:10.5px;padding:3px 8px;border-radius:999px;background:#fff;border:1px solid var(--border);color:var(--text-muted);}
+  .pill.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+
+  #pdfCanvasWrap{position:relative;border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:260px;background:#eee;margin:6px 0;}
+  #pdfCanvas{display:block;cursor:crosshair;}
+  .ptmark{position:absolute;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#facc15;border:2px solid #78350f;font-size:9px;color:#78350f;display:flex;align-items:center;justify-content:center;font-weight:700;pointer-events:none;}
+
+  #thumbStrip{display:flex;gap:6px;overflow-x:auto;padding:4px 0;}
+  .thumb{flex:0 0 auto;width:56px;height:74px;border:2px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;background:#fff;font-size:10px;color:var(--text-muted);overflow:hidden;}
+  .thumb.selected{border-color:var(--accent);}
+  .thumb img{width:100%;height:100%;object-fit:contain;}
+
+  #fileList{max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin:6px 0;}
+  .filerow{padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:11.5px;}
+  .filerow:last-child{border-bottom:none;}
+  .filerow:hover{background:var(--panel-bg);}
+  .filerow.selected{background:#e6f0ff;}
+
+  #listHeader{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--panel-bg);}
+  #listHeader .count{font-size:11.5px;color:var(--text-muted);}
+  #list{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
+  .empty{color:var(--text-muted);text-align:center;margin-top:40px;font-size:12px;}
+  .ov-card{border-radius:var(--radius);border:1px solid var(--border);box-shadow:var(--shadow);overflow:hidden;background:#fff;}
+  .ov-card .head{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--accent);color:#fff;}
+  .ov-card .head .title{font-weight:600;font-size:12.5px;flex:1;}
+  .ov-card .badge{font-size:10px;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.25);}
+  .ov-card .body{padding:8px 10px;font-size:11.5px;color:var(--text-muted);}
+  .ov-card .body div{display:flex;justify-content:space-between;padding:1px 0;}
+  .ov-card .body .v{color:var(--text);font-weight:500;}
+  .ov-card .foot{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;padding:6px 10px;border-top:1px solid var(--border);}
+  .ov-card .foot button{padding:3px 8px;font-size:11px;border-radius:6px;}
+
+  #debugLog{font-size:10.5px;color:var(--text-muted);padding:6px 12px;border-top:1px solid var(--border);max-height:90px;overflow-y:auto;white-space:pre-wrap;display:none;}
+  #debugLog.open{display:block;}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🗺️ PDF-overlay</h1>
+    <span class="status" id="status">Ansluter…</span>
+  </header>
+
+  <div class="toolbar">
+    <button class="primary" id="btnNewOverlay">+ Ny PDF-overlay</button>
+    <button class="ghost" id="btnDebugToggle">🐞 Rådata</button>
+  </div>
+
+  <div class="wizard" id="wizard">
+
+    <div class="step" id="stepSource">
+      <h3>Steg 1 — Välj PDF</h3>
+      <div class="row">
+        <button class="ghost" id="btnPickFromTC">📁 Välj från Trimble Connect</button>
+        <button class="ghost" id="btnPickLocal">💻 Ladda upp lokal PDF</button>
+      </div>
+      <input type="file" id="localFileInput" accept="application/pdf" style="display:none;" />
+      <div id="fileList" style="display:none;"></div>
+      <div class="hint" id="sourceStatus"></div>
+    </div>
+
+    <div class="step disabled" id="stepPage">
+      <h3>Steg 2 — Välj sida</h3>
+      <div id="thumbStrip"></div>
+    </div>
+
+    <div class="step disabled" id="stepCalib">
+      <h3>Steg 3 — Referenspunkter</h3>
+      <div class="hint">
+        <b>2 punkter</b> = platt plan (horisontell nivå du ställer in — för planritningar).<br/>
+        <b>3 punkter</b> = fritt plan i 3D (för sektioner/fasader med lutning).
+      </div>
+      <div class="row">
+        <button class="ghost active" id="btnMode2">2 punkter (plan)</button>
+        <button class="ghost" id="btnMode3">3 punkter (fritt plan)</button>
+      </div>
+
+      <div id="pdfCanvasWrap"><canvas id="pdfCanvas"></canvas></div>
+
+      <div class="pillrow" id="pairPills"></div>
+      <div class="hint" id="calibHint">Klicka en punkt på PDF-sidan ovan.</div>
+      <div class="row">
+        <button class="ghost" id="btnUndoPair">↶ Ångra senaste punkten</button>
+        <button class="ghost" id="btnClearPairs">Rensa alla punkter</button>
+      </div>
+
+      <div id="elevationRow" style="display:none;">
+        <label>Nivå (m, absolut Z-höjd för planet)</label>
+        <input type="text" id="elevationInput" placeholder="t.ex. 415.80" />
+      </div>
+    </div>
+
+    <div class="step disabled" id="stepAdjust">
+      <h3>Steg 4 — Justera</h3>
+      <div class="row">
+        <div><label>Extra X-offset (m)</label><input type="number" step="0.05" id="adjX" value="0"></div>
+        <div><label>Extra Y-offset (m)</label><input type="number" step="0.05" id="adjY" value="0"></div>
+        <div><label>Extra Z-offset (m)</label><input type="number" step="0.05" id="adjZ" value="0"></div>
+      </div>
+      <label>Extra rotation kring planets normal (grader): <span id="rotVal">0°</span></label>
+      <input type="range" id="adjRot" min="-180" max="180" value="0" step="1">
+      <label>Extra skala: <span id="scaleVal">1.00×</span></label>
+      <input type="range" id="adjScale" min="0.5" max="2" value="1" step="0.01">
+      <label>Transparens: <span id="opacityVal">80%</span></label>
+      <input type="range" id="adjOpacity" min="0" max="100" value="80" step="5">
+      <div class="toggle-row">
+        <label style="margin:0;">Synlig guide i 3D-vyn</label>
+        <input type="checkbox" id="adjVisible" checked>
+      </div>
+      <div class="row">
+        <button class="ghost" id="btnUpdateGuide">↻ Uppdatera guide i 3D-vyn</button>
+      </div>
+      <div class="hint">
+        Guiden ritas som fyra hörnpunkter + kryssdiagonaler (samma linjeteknik
+        som övriga verktyg) — inte den riktiga PDF-bilden, eftersom Trimbles
+        API inte kan rendera texturer live. Använd guiden för att verifiera
+        läge/rotation/skala innan du låser.
+      </div>
+    </div>
+
+    <div class="step disabled" id="stepLock">
+      <h3>Steg 5 — Lås placering</h3>
+      <div class="hint">
+        Genererar en texturerad IFC-fil av PDF-sidan i rätt läge och försöker
+        ladda upp den till projektet. Detta är den mest experimentella delen
+        — ladda gärna ner filerna och testa manuellt först om
+        auto-uppladdningen inte fungerar i din miljö.
+      </div>
+      <div class="row">
+        <button class="primary" id="btnLock">🔒 Lås & generera</button>
+        <button class="ghost" id="btnDownloadIfc" disabled>⬇ Ladda ner IFC</button>
+        <button class="ghost" id="btnDownloadCalib" disabled>⬇ Ladda ner kalibrering (JSON)</button>
+      </div>
+      <div class="hint" id="lockStatus"></div>
+      <div class="row">
+        <button class="ghost" id="btnCancelWizard">Avbryt / stäng guiden</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="listHeader">
+    <span class="count" id="ovCount">0 overlays</span>
+  </div>
+  <div id="list"></div>
+  <div id="debugLog"></div>
+</div>
+
+<script>
+(function(){
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  let API = null;
+  let accessToken = null;
+  let apiBaseUrl = null; // best-effort guess, see resolveApiBaseUrl()
+  let currentModelIdGuess = null;
+  let debugOn = false;
+
+  let overlays = []; // locked/registered overlays, see renderOverlayList
+  let nextOvId = 1;
+
+  // ---- Wizard state ----
+  let wiz = {
+    pdfBytes: null,
+    pdfDoc: null,
+    pdfSourceName: null,
+    pdfSourceKind: null,   // 'local' | 'tc'
+    pdfTcFileId: null,
+    pdfTcVersionId: null,
+    pageNum: 1,
+    pageViewport: null,    // pdf.js viewport at scale 1 (points, 1/72")
+    pageCanvasScale: 1,
+    mode: 2,                // 2 or 3 reference points
+    pairs: [],               // [{pdf:{x,y}, world:{xMM,yMM,zMM,modelId}}]
+    activePairPdfPoint: null, // pdf point waiting for its matching 3D pick
+    elevationM: null,
+    adjust: { x:0, y:0, z:0, rotDeg:0, scale:1, opacity:80, visible:true },
+    guideMarkupIds: [],
+    activeTool: null // 'pdf-pick' handled via canvas click; '3d-pick' via onPicked
+  };
+
+  const el = id => document.getElementById(id);
+  const statusEl = el("status");
+  const debugLogEl = el("debugLog");
+  const wizard = el("wizard");
+
+  function log(...args){
+    console.log("[PDF-overlay]", ...args);
+    if(debugOn){
+      debugLogEl.textContent = (new Date().toLocaleTimeString() + " " + args.map(a=>{
+        try{ return typeof a === "string" ? a : JSON.stringify(a); } catch(e){ return String(a); }
+      }).join(" ") + "\n") + debugLogEl.textContent;
+    }
+  }
+
+  el("btnDebugToggle").onclick = () => {
+    debugOn = !debugOn;
+    debugLogEl.classList.toggle("open", debugOn);
+    el("btnDebugToggle").classList.toggle("active", debugOn);
+  };
+
+  // ---------------- Markup helpers (same proven pattern as the extrude tool) ----------------
+
+  function makePick(modelId, xMM, yMM, zMM){
+    return { modelId, positionX: xMM, positionY: yMM, positionZ: zMM, type: "point" };
+  }
+  function hexToRgba(hex, alpha){
+    return { r: parseInt(hex.slice(1,3),16), g: parseInt(hex.slice(3,5),16), b: parseInt(hex.slice(5,7),16), a: alpha ?? 255 };
+  }
+  async function drawEdgesBatch(modelId, edges, color){
+    const defs = edges.map(([a,b]) => ({
+      color,
+      start: makePick(modelId, a.xMM, a.yMM, a.zMM),
+      end: makePick(modelId, b.xMM, b.yMM, b.zMM)
+    }));
+    try {
+      if(API.markup.addLineMarkups){
+        const added = await API.markup.addLineMarkups(defs);
+        if(added && added.length) return added.map(m => m && m.id).filter(Boolean);
+      }
+    } catch(err){ log("addLineMarkups misslyckades, provar arrow:", err.message||err); }
+    try {
+      const added = await API.markup.addArrowMarkups(defs);
+      if(added && added.length) return added.map(m => m && m.id).filter(Boolean);
+    } catch(err){ log("addArrowMarkups misslyckades också:", err.message||err); }
+    return [];
+  }
+  async function removeMarkupIds(ids){
+    const clean = (ids||[]).filter(Boolean);
+    if(clean.length && API){
+      try { await API.markup.removeMarkups(clean); } catch(e){}
+    }
+  }
+
+  // ---------------- Wizard open/close ----------------
+
+  el("btnNewOverlay").onclick = () => { resetWizard(); wizard.classList.add("open"); };
+  el("btnCancelWizard").onclick = async () => {
+    await removeMarkupIds(wiz.guideMarkupIds);
+    wizard.classList.remove("open");
+    resetWizard();
+  };
+
+  function resetWizard(){
+    wiz = {
+      pdfBytes: null, pdfDoc: null, pdfSourceName: null, pdfSourceKind: null,
+      pdfTcFileId: null, pdfTcVersionId: null,
+      pageNum: 1, pageViewport: null, pageCanvasScale: 1,
+      mode: 2, pairs: [], activePairPdfPoint: null, elevationM: null,
+      adjust: { x:0, y:0, z:0, rotDeg:0, scale:1, opacity:80, visible:true },
+      guideMarkupIds: [], activeTool: null
+    };
+    el("stepPage").classList.add("disabled");
+    el("stepCalib").classList.add("disabled");
+    el("stepAdjust").classList.add("disabled");
+    el("stepLock").classList.add("disabled");
+    el("fileList").style.display = "none";
+    el("sourceStatus").textContent = "";
+    el("thumbStrip").innerHTML = "";
+    el("pairPills").innerHTML = "";
+    el("lockStatus").textContent = "";
+    el("btnDownloadIfc").disabled = true;
+    el("btnDownloadCalib").disabled = true;
+    el("btnMode2").classList.add("active");
+    el("btnMode3").classList.remove("active");
+    el("elevationRow").style.display = "none";
+    const ctx = el("pdfCanvas").getContext("2d");
+    ctx.clearRect(0,0,el("pdfCanvas").width, el("pdfCanvas").height);
+    document.querySelectorAll(".ptmark").forEach(m => m.remove());
+  }
+
+  // ---------------- Step 1: choose PDF source ----------------
+
+  el("btnPickLocal").onclick = () => el("localFileInput").click();
+  el("localFileInput").onchange = async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    const buf = await file.arrayBuffer();
+    wiz.pdfBytes = new Uint8Array(buf);
+    wiz.pdfSourceName = file.name;
+    wiz.pdfSourceKind = "local";
+    el("sourceStatus").textContent = `Vald: ${file.name}`;
+    await loadPdfIntoWizard();
+  };
+
+  el("btnPickFromTC").onclick = async () => {
+    const box = el("fileList");
+    box.style.display = "block";
+    box.innerHTML = '<div class="filerow">Söker PDF-filer i projektet…</div>';
+    try {
+      const files = await listProjectPdfFiles();
+      if(!files.length){
+        box.innerHTML = '<div class="filerow">Hittade inga PDF-filer. Kontrollera "🐞 Rådata" om detta verkar fel — filsökningen är experimentell.</div>';
+        return;
+      }
+      box.innerHTML = "";
+      files.forEach(f => {
+        const row = document.createElement("div");
+        row.className = "filerow";
+        row.textContent = f.name;
+        row.onclick = async () => {
+          [...box.children].forEach(c => c.classList.remove("selected"));
+          row.classList.add("selected");
+          el("sourceStatus").textContent = `Hämtar ${f.name}…`;
+          try {
+            const bytes = await downloadTcFile(f);
+            wiz.pdfBytes = bytes;
+            wiz.pdfSourceName = f.name;
+            wiz.pdfSourceKind = "tc";
+            wiz.pdfTcFileId = f.id;
+            wiz.pdfTcVersionId = f.versionId || f.latestVersionId || null;
+            el("sourceStatus").textContent = `Vald: ${f.name}`;
+            await loadPdfIntoWizard();
+          } catch(err){
+            log("Kunde inte hämta PDF från Trimble Connect:", err.message||err);
+            el("sourceStatus").textContent = "Kunde inte hämta filen — se 🐞 Rådata.";
+          }
+        };
+        box.appendChild(row);
+      });
+    } catch(err){
+      log("Kunde inte lista PDF-filer:", err.message||err);
+      box.innerHTML = '<div class="filerow">Filsökning misslyckades — se 🐞 Rådata. Använd "Ladda upp lokal PDF" istället.</div>';
+    }
+  };
+
+  async function loadPdfIntoWizard(){
+    try {
+      wiz.pdfDoc = await pdfjsLib.getDocument({ data: wiz.pdfBytes }).promise;
+      el("stepPage").classList.remove("disabled");
+      await renderThumbnails();
+      await selectPage(1);
+    } catch(err){
+      log("Kunde inte läsa PDF:en:", err.message||err);
+      el("sourceStatus").textContent = "Kunde inte tolka filen som PDF.";
+    }
+  }
+
+  async function renderThumbnails(){
+    const strip = el("thumbStrip");
+    strip.innerHTML = "";
+    const n = wiz.pdfDoc.numPages;
+    for(let p = 1; p <= n; p++){
+      const thumb = document.createElement("div");
+      thumb.className = "thumb" + (p === 1 ? " selected" : "");
+      thumb.textContent = "Sida " + p;
+      strip.appendChild(thumb);
+      thumb.onclick = () => selectPage(p);
+      // render a small preview image (best-effort, non-blocking)
+      wiz.pdfDoc.getPage(p).then(async (page) => {
+        const vp = page.getViewport({ scale: 0.15 });
+        const c = document.createElement("canvas");
+        c.width = vp.width; c.height = vp.height;
+        await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+        const img = document.createElement("img");
+        img.src = c.toDataURL();
+        thumb.textContent = "";
+        thumb.appendChild(img);
+      }).catch(()=>{});
+    }
+  }
+
+  async function selectPage(p){
+    wiz.pageNum = p;
+    [...el("thumbStrip").children].forEach((t,i) => t.classList.toggle("selected", i === p-1));
+    const page = await wiz.pdfDoc.getPage(p);
+    const scale = 1.3;
+    const vp = page.getViewport({ scale });
+    wiz.pageViewport = page.getViewport({ scale: 1 }); // unscaled, in PDF points (1/72")
+    wiz.pageCanvasScale = scale;
+    const canvas = el("pdfCanvas");
+    canvas.width = vp.width; canvas.height = vp.height;
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+    el("stepCalib").classList.remove("disabled");
+    wiz.pairs = [];
+    wiz.activePairPdfPoint = null;
+    document.querySelectorAll(".ptmark").forEach(m => m.remove());
+    renderPairPills();
+    updateCalibHint();
+  }
+
+  // ---------------- Step 3: reference points ----------------
+
+  el("btnMode2").onclick = () => setMode(2);
+  el("btnMode3").onclick = () => setMode(3);
+  function setMode(m){
+    wiz.mode = m;
+    el("btnMode2").classList.toggle("active", m===2);
+    el("btnMode3").classList.toggle("active", m===3);
+    el("elevationRow").style.display = (m===2) ? "block" : "none";
+    wiz.pairs = [];
+    wiz.activePairPdfPoint = null;
+    document.querySelectorAll(".ptmark").forEach(x=>x.remove());
+    renderPairPills();
+    updateCalibHint();
+  }
+
+  el("pdfCanvas").addEventListener("click", (e) => {
+    if(wiz.pairs.length >= wiz.mode) return;
+    if(wiz.activePairPdfPoint){ return; } // waiting for the matching 3D pick already
+    const canvas = e.target;
+    const rect = canvas.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+    // Convert canvas pixels -> PDF point-space (unscaled, origin bottom-left per PDF convention,
+    // but pdf.js viewport.convertToPdfPoint handles the flip for us).
+    const [pdfX, pdfY] = wiz.pageViewport.convertToPdfPoint(cx / wiz.pageCanvasScale * 1, cy / wiz.pageCanvasScale * 1);
+    wiz.activePairPdfPoint = { x: pdfX, y: pdfY };
+
+    const mark = document.createElement("div");
+    mark.className = "ptmark";
+    mark.textContent = String(wiz.pairs.length + 1);
+    mark.style.left = cx + "px";
+    mark.style.top = cy + "px";
+    el("pdfCanvasWrap").appendChild(mark);
+
+    wiz.activeTool = "3d-pick";
+    updateCalibHint();
+  });
+
+  function renderPairPills(){
+    const wrap = el("pairPills");
+    wrap.innerHTML = "";
+    for(let i = 0; i < wiz.mode; i++){
+      const pill = document.createElement("span");
+      pill.className = "pill" + (i < wiz.pairs.length ? " on" : "");
+      pill.textContent = `Punkt ${i+1}`;
+      wrap.appendChild(pill);
+    }
+  }
+
+  function updateCalibHint(){
+    if(wiz.pairs.length >= wiz.mode){
+      el("calibHint").textContent = "Alla referenspunkter klara. Gå vidare till Steg 4.";
+      el("stepAdjust").classList.remove("disabled");
+      return;
+    }
+    if(wiz.activePairPdfPoint){
+      el("calibHint").textContent = `Klicka nu på motsvarande punkt i 3D-vyn (punkt ${wiz.pairs.length+1} av ${wiz.mode}).`;
+    } else {
+      el("calibHint").textContent = `Klicka punkt ${wiz.pairs.length+1} av ${wiz.mode} på PDF-sidan ovan.`;
+    }
+  }
+
+  el("btnUndoPair").onclick = () => {
+    if(wiz.activePairPdfPoint){ wiz.activePairPdfPoint = null; wiz.activeTool = null; }
+    else { wiz.pairs.pop(); }
+    const marks = document.querySelectorAll(".ptmark");
+    if(marks.length) marks[marks.length-1].remove();
+    renderPairPills(); updateCalibHint();
+  };
+  el("btnClearPairs").onclick = () => {
+    wiz.pairs = []; wiz.activePairPdfPoint = null; wiz.activeTool = null;
+    document.querySelectorAll(".ptmark").forEach(m=>m.remove());
+    renderPairPills(); updateCalibHint();
+  };
+
+  function extractPickPoint(data){
+    if(!data) return null;
+    const p = data.position || data.point || data.hitPoint || data;
+    if(!p) return null;
+    const x = p.x ?? p.positionX, y = p.y ?? p.positionY, z = p.z ?? p.positionZ;
+    if(x===undefined||y===undefined||z===undefined) return null;
+    return { xMM: x*1000, yMM: y*1000, zMM: z*1000, modelId: data.modelId || (data.model&&data.model.id) || currentModelIdGuess };
+  }
+
+  // ---------------- Step 4: live adjustment ----------------
+
+  ["adjX","adjY","adjZ"].forEach(id => el(id).oninput = () => { wiz.adjust[id.slice(3).toLowerCase()] = parseFloat(el(id).value)||0; });
+  el("adjRot").oninput = () => { wiz.adjust.rotDeg = parseFloat(el("adjRot").value); el("rotVal").textContent = wiz.adjust.rotDeg + "°"; };
+  el("adjScale").oninput = () => { wiz.adjust.scale = parseFloat(el("adjScale").value); el("scaleVal").textContent = wiz.adjust.scale.toFixed(2) + "×"; };
+  el("adjOpacity").oninput = () => { wiz.adjust.opacity = parseFloat(el("adjOpacity").value); el("opacityVal").textContent = wiz.adjust.opacity + "%"; };
+  el("adjVisible").onchange = () => { wiz.adjust.visible = el("adjVisible").checked; };
+
+  // ---- Plane / transform math ----
+
+  function vecSub(a,b){ return {x:a.x-b.x, y:a.y-b.y, z:a.z-b.z}; }
+  function vecAdd(a,b){ return {x:a.x+b.x, y:a.y+b.y, z:a.z+b.z}; }
+  function vecScale(a,s){ return {x:a.x*s, y:a.y*s, z:a.z*s}; }
+  function vecCross(a,b){ return {x:a.y*b.z-a.z*b.y, y:a.z*b.x-a.x*b.z, z:a.x*b.y-a.y*b.x}; }
+  function vecDot(a,b){ return a.x*b.x+a.y*b.y+a.z*b.z; }
+  function vecLen(a){ return Math.sqrt(vecDot(a,a)); }
+  function vecNorm(a){ const l=vecLen(a)||1; return {x:a.x/l,y:a.y/l,z:a.z/l}; }
+
+  function worldOf(p){ return { x: p.xMM/1000, y: p.yMM/1000, z: p.zMM/1000 }; }
+
+  // Builds { origin, basisU, basisV, normal } — a plane in world meters — from
+  // the collected reference pairs, plus the resulting PDF(pt)->plane(s,t) 2D map.
+  function buildBasePlacement(){
+    const worldPts = wiz.pairs.map(p => worldOf(p.world));
+    const pdfPts = wiz.pairs.map(p => p.pdf);
+
+    if(wiz.mode === 2){
+      const elevM = parseFloat(el("elevationInput").value);
+      const z = isNaN(elevM) ? ((worldPts[0].z+worldPts[1].z)/2) : elevM;
+      const w0 = { x: worldPts[0].x, y: worldPts[0].y, z };
+      const w1 = { x: worldPts[1].x, y: worldPts[1].y, z };
+      const worldVec = vecSub(w1,w0);
+      const worldDist = vecLen(worldVec);
+      const pdfVec = { x: pdfPts[1].x-pdfPts[0].x, y: pdfPts[1].y-pdfPts[0].y };
+      const pdfDist = Math.sqrt(pdfVec.x*pdfVec.x + pdfVec.y*pdfVec.y) || 1;
+      const baseScale = worldDist / pdfDist; // meters per PDF-point
+      const worldAngle = Math.atan2(worldVec.y, worldVec.x);
+      const pdfAngle = Math.atan2(pdfVec.y, pdfVec.x);
+      const rot = worldAngle - pdfAngle;
+
+      const basisU = { x: Math.cos(rot)*baseScale, y: Math.sin(rot)*baseScale, z: 0 };
+      const basisV = { x: -Math.sin(rot)*baseScale, y: Math.cos(rot)*baseScale, z: 0 };
+      // origin = world point corresponding to pdf (0,0) under this mapping
+      const origin = vecSub(w0, vecAdd(vecScale(basisU, pdfPts[0].x), vecScale(basisV, pdfPts[0].y)));
+      return { origin, basisU, basisV, normal: {x:0,y:0,z:1} };
+    }
+
+    // 3-point: solve full 2D affine PDF(u,v) -> plane-local(s,t), where the
+    // plane's own basis is derived from the 3 world points themselves.
+    const w0 = worldPts[0], w1 = worldPts[1], w2 = worldPts[2];
+    const eU = vecSub(w1, w0);
+    const rawV = vecSub(w2, w0);
+    const normal = vecNorm(vecCross(eU, rawV));
+    const uAxis = vecNorm(eU);
+    const vAxis = vecNorm(vecCross(normal, uAxis));
+
+    // world points expressed in plane-local (s,t)
+    function toLocal(w){ const d = vecSub(w, w0); return { s: vecDot(d,uAxis), t: vecDot(d,vAxis) }; }
+    const L = [ {s:0,t:0}, toLocal(w1), toLocal(w2) ];
+
+    // Solve affine: [s,t] = M * [u,v] + [ou,ov] from 3 point correspondences (6 unknowns, 6 eqns)
+    const P = pdfPts;
+    function solveAffine(targets){
+      // targets[i] is s or t value; returns [a,b,c] such that value = a*u + b*v + c
+      const A = [
+        [P[0].x, P[0].y, 1],
+        [P[1].x, P[1].y, 1],
+        [P[2].x, P[2].y, 1]
+      ];
+      const det = A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+                - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+                + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+      if(Math.abs(det) < 1e-9) return [0,0,0];
+      function replaceCol(col, vals){
+        return A.map((row,i) => row.map((v,j) => j===col ? vals[i] : v));
+      }
+      function det3(M){
+        return M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])
+             - M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])
+             + M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
+      }
+      const a = det3(replaceCol(0, targets)) / det;
+      const b = det3(replaceCol(1, targets)) / det;
+      const c = det3(replaceCol(2, targets)) / det;
+      return [a,b,c];
+    }
+    const [as,bs,cs] = solveAffine([L[0].s, L[1].s, L[2].s]);
+    const [at,bt,ct] = solveAffine([L[0].t, L[1].t, L[2].t]);
+
+    // We want pdf(u,v) -> world = w0 + s*uAxis + t*vAxis, with s = as*u+bs*v+cs, t = at*u+bt*v+ct
+    // => world = w0 + cs*uAxis + ct*vAxis  +  u*(as*uAxis+at*vAxis)  +  v*(bs*uAxis+bt*vAxis)
+    const origin = vecAdd(w0, vecAdd(vecScale(uAxis, cs), vecScale(vAxis, ct)));
+    const basisU = vecAdd(vecScale(uAxis, as), vecScale(vAxis, at));
+    const basisV = vecAdd(vecScale(uAxis, bs), vecScale(vAxis, bt));
+    return { origin, basisU, basisV, normal };
+  }
+
+  // Applies the Step-4 manual adjustments (offset, extra rotation about the
+  // plane normal, extra uniform scale) on top of the base placement.
+  function applyAdjustments(base){
+    const n = vecNorm(base.normal);
+    const rad = wiz.adjust.rotDeg * Math.PI/180;
+    function rotateAroundNormal(v){
+      // Rodrigues' rotation formula
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      const term1 = vecScale(v, cos);
+      const term2 = vecScale(vecCross(n, v), sin);
+      const term3 = vecScale(n, vecDot(n,v) * (1-cos));
+      return vecAdd(vecAdd(term1, term2), term3);
+    }
+    const s = wiz.adjust.scale;
+    const basisU = vecScale(rotateAroundNormal(base.basisU), s);
+    const basisV = vecScale(rotateAroundNormal(base.basisV), s);
+    const origin = vecAdd(base.origin, { x: wiz.adjust.x, y: wiz.adjust.y, z: wiz.adjust.z });
+    return { origin, basisU, basisV, normal: n };
+  }
+
+  function pdfToWorld(placement, u, v){
+    return vecAdd(placement.origin, vecAdd(vecScale(placement.basisU, u), vecScale(placement.basisV, v)));
+  }
+
+  function currentPlacement(){
+    const base = buildBasePlacement();
+    return applyAdjustments(base);
+  }
+
+  function pageCornersPdf(){
+    const w = wiz.pageViewport.width, h = wiz.pageViewport.height;
+    return [ {x:0,y:0}, {x:w,y:0}, {x:w,y:h}, {x:0,y:h} ];
+  }
+
+  el("btnUpdateGuide").onclick = async () => {
+    await removeMarkupIds(wiz.guideMarkupIds);
+    wiz.guideMarkupIds = [];
+    if(!wiz.adjust.visible) return;
+    if(wiz.pairs.length < wiz.mode) return;
+    const placement = currentPlacement();
+    const modelId = wiz.pairs[0].world.modelId;
+    const corners = pageCornersPdf().map(c => pdfToWorld(placement, c.x, c.y));
+    const cornersMM = corners.map(c => ({ xMM: c.x*1000, yMM: c.y*1000, zMM: c.z*1000 }));
+    const color = { r:37, g:99, b:235, a: Math.round(255 * (wiz.adjust.opacity/100)) };
+    const edges = [
+      [cornersMM[0],cornersMM[1]], [cornersMM[1],cornersMM[2]],
+      [cornersMM[2],cornersMM[3]], [cornersMM[3],cornersMM[0]],
+      [cornersMM[0],cornersMM[2]], [cornersMM[1],cornersMM[3]] // diagonals, so plane is visible even edge-on
+    ];
+    wiz.guideMarkupIds = await drawEdgesBatch(modelId, edges, color);
+    el("stepLock").classList.remove("disabled");
+  };
+
+  // ---------------- Step 5: lock — generate IFC + calibration JSON ----------------
+
+  function rasterizeCurrentPage(){
+    // Re-render the selected page at higher resolution for use as an IFC texture.
+    return wiz.pdfDoc.getPage(wiz.pageNum).then(async page => {
+      const scale = 2; // ~144 DPI-ish, keeps texture reasonably sharp but not huge
+      const vp = page.getViewport({ scale });
+      const c = document.createElement("canvas");
+      c.width = vp.width; c.height = vp.height;
+      await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+      return c.toDataURL("image/png");
+    });
+  }
+
+  // Minimal IFC4 (STEP/SPF) file: a single flat quad, textured via
+  // IfcTextureCoordinateGenerator (planar "COORD" mapping) + IfcImageTexture
+  // referencing the PDF page as a data: URI. This is a best-effort, not a
+  // fully schema-validated export — test with "Ladda ner IFC" first.
+  function buildIfcText(cornersM, dataUrl, title){
+    let id = 0;
+    const lines = [];
+    const ref = () => "#" + (++id);
+    function P(refId, def){ lines.push(refId + "=" + def + ";"); }
+
+    const guid = () => "2O2Fr" + Math.random().toString(36).slice(2,10) + "AAOe";
+
+    const ctx = ref(); // geometric representation context placeholder — assigned below with real id sequence
+    // We build in dependency order so forward refs aren't needed.
+
+    const originId = ref(); P(originId, "IFCCARTESIANPOINT((0.,0.,0.))");
+    const zDirId = ref(); P(zDirId, "IFCDIRECTION((0.,0.,1.))");
+    const xDirId = ref(); P(xDirId, "IFCDIRECTION((1.,0.,0.))");
+    const axis2PlacementId = ref(); P(axis2PlacementId, `IFCAXIS2PLACEMENT3D(${originId},${zDirId},${xDirId})`);
+    const worldCtxId = ref(); P(worldCtxId, `IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,${axis2PlacementId},$)`);
+
+    const lenUnitId = ref(); P(lenUnitId, "IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.)");
+    const unitAssignId = ref(); P(unitAssignId, `IFCUNITASSIGNMENT((${lenUnitId}))`);
+
+    const projectId = ref();
+    P(projectId, `IFCPROJECT('${guid()}',$,'${title}',$,$,$,$,(${worldCtxId}),${unitAssignId})`);
+
+    const siteLocalPlacement = ref(); P(siteLocalPlacement, `IFCLOCALPLACEMENT($,${axis2PlacementId})`);
+    const siteId = ref();
+    P(siteId, `IFCSITE('${guid()}',$,'Site',$,$,${siteLocalPlacement},$,$,.ELEMENT.,$,$,$,$,$)`);
+
+    const relAggId = ref();
+    P(relAggId, `IFCRELAGGREGATES('${guid()}',$,$,$,${projectId},(${siteId}))`);
+
+    // Quad points (world coordinates, meters) — corners already include the
+    // full transform. IfcCartesianPointList3D takes raw coordinate triples
+    // directly (a LIST OF LIST OF REAL), not references to point entities.
+    const coordTuples = cornersM.map(c =>
+      `(${c.x.toFixed(6)},${c.y.toFixed(6)},${c.z.toFixed(6)})`
+    ).join(",");
+    const pointListId = ref();
+    P(pointListId, `IFCCARTESIANPOINTLIST3D((${coordTuples}))`);
+
+    const faceId = ref();
+    P(faceId, `IFCINDEXEDPOLYGONALFACE((1,2,3,4))`);
+    const tessId = ref();
+    P(tessId, `IFCPOLYGONALFACESET(${pointListId},.T.,(${faceId}),$)`);
+
+    const shapeRepId = ref();
+    P(shapeRepId, `IFCSHAPEREPRESENTATION(${worldCtxId},'Body','Tessellation',(${tessId}))`);
+    const prodDefShapeId = ref();
+    P(prodDefShapeId, `IFCPRODUCTDEFINITIONSHAPE($,$,(${shapeRepId}))`);
+
+    const proxyPlacement = ref(); P(proxyPlacement, `IFCLOCALPLACEMENT($,${axis2PlacementId})`);
+    const proxyId = ref();
+    P(proxyId, `IFCBUILDINGELEMENTPROXY('${guid()}',$,'${title}',$,$,${proxyPlacement},${prodDefShapeId},$,$)`);
+
+    const relContainedId = ref();
+    P(relContainedId, `IFCRELCONTAINEDINSPATIALSTRUCTURE('${guid()}',$,$,$,(${proxyId}),${siteId})`);
+
+    // Texture: planar automatic UV generation + image texture via data: URI
+    const texCoordGenId = ref();
+    P(texCoordGenId, `IFCTEXTURECOORDINATEGENERATOR((${tessId}),$,'COORD')`);
+    const imgTexId = ref();
+    P(imgTexId, `IFCIMAGETEXTURE((${tessId}),$,.FALSE.,.FALSE.,$,$,'${dataUrl.replace(/'/g,"")}')`);
+    const surfStyleId = ref();
+    P(surfStyleId, `IFCSURFACESTYLEWITHTEXTURES((${imgTexId}))`);
+    const surfStyleWrapId = ref();
+    P(surfStyleWrapId, `IFCSURFACESTYLE($,.BOTH.,(${surfStyleId}))`);
+    const styledItemId = ref();
+    P(styledItemId, `IFCSTYLEDITEM(${tessId},(${surfStyleWrapId}),$)`);
+
+    const header = `ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION((''),'2;1');
+FILE_NAME('${title}.ifc','${new Date().toISOString()}',(''),(''),'PDF-overlay tool','','');
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+`;
+    const footer = `ENDSEC;
+END-ISO-10303-21;
+`;
+    return header + lines.join("\n") + "\n" + footer;
+  }
+
+  el("btnLock").onclick = async () => {
+    if(wiz.pairs.length < wiz.mode){ alert("Referenspunkterna är inte klara än."); return; }
+    el("lockStatus").textContent = "Rastrerar PDF-sidan…";
+    let dataUrl;
+    try { dataUrl = await rasterizeCurrentPage(); }
+    catch(err){ log("Kunde inte rastrera sidan:", err.message||err); el("lockStatus").textContent = "Misslyckades att rastrera PDF-sidan."; return; }
+
+    const placement = currentPlacement();
+    const corners = pageCornersPdf().map(c => pdfToWorld(placement, c.x, c.y));
+    const title = (wiz.pdfSourceName||"overlay").replace(/[^a-zA-Z0-9_-]/g,"_") + "_s" + wiz.pageNum;
+
+    el("lockStatus").textContent = "Genererar IFC-fil…";
+    let ifcText;
+    try { ifcText = buildIfcText(corners, dataUrl, title); }
+    catch(err){ log("IFC-generering kraschade:", err.message||err); el("lockStatus").textContent = "Kunde inte generera IFC-filen — se 🐞 Rådata."; return; }
+
+    const calibration = {
+      version: 1,
+      pdfFileName: wiz.pdfSourceName,
+      pdfSourceKind: wiz.pdfSourceKind,
+      pdfTcFileId: wiz.pdfTcFileId,
+      pdfTcVersionId: wiz.pdfTcVersionId,
+      pageNumber: wiz.pageNum,
+      mode: wiz.mode,
+      pairs: wiz.pairs,
+      elevationM: wiz.mode===2 ? parseFloat(el("elevationInput").value) : null,
+      adjust: wiz.adjust,
+      corners: corners,
+      createdAt: new Date().toISOString()
+    };
+
+    wiz._lastIfcText = ifcText;
+    wiz._lastIfcName = title + ".ifc";
+    wiz._lastCalibText = JSON.stringify(calibration, null, 2);
+    wiz._lastCalibName = title + ".calibration.json";
+    el("btnDownloadIfc").disabled = false;
+    el("btnDownloadCalib").disabled = false;
+
+    let uploadNote = "";
+    try {
+      el("lockStatus").textContent = "Försöker ladda upp till projektet…";
+      await uploadTcFile(wiz._lastIfcName, ifcText, "application/x-step");
+      await uploadTcFile(wiz._lastCalibName, wiz._lastCalibText, "application/json");
+      uploadNote = "Uppladdning till projektet lyckades.";
+    } catch(err){
+      log("Automatisk uppladdning misslyckades:", err.message||err);
+      uploadNote = "Automatisk uppladdning misslyckades (experimentellt API-anrop, se 🐞 Rådata) — ladda ner filerna nedan och testa manuell uppladdning istället.";
+    }
+    el("lockStatus").textContent = uploadNote;
+
+    overlays.push({
+      id: nextOvId++,
+      title,
+      pdfName: wiz.pdfSourceName,
+      page: wiz.pageNum,
+      mode: wiz.mode,
+      corners,
+      modelId: wiz.pairs[0].world.modelId,
+      opacity: wiz.adjust.opacity,
+      guideMarkupIds: wiz.guideMarkupIds,
+      calibration
+    });
+    wiz.guideMarkupIds = []; // ownership moved to the overlay entry
+    renderOverlayList();
+  };
+
+  el("btnDownloadIfc").onclick = () => downloadTextFile(wiz._lastIfcName, wiz._lastIfcText);
+  el("btnDownloadCalib").onclick = () => downloadTextFile(wiz._lastCalibName, wiz._lastCalibText);
+
+  function downloadTextFile(name, text){
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  // ---------------- Overlay list ----------------
+
+  function renderOverlayList(){
+    el("ovCount").textContent = `${overlays.length} overlay${overlays.length===1?"":"s"}`;
+    const list = el("list");
+    list.innerHTML = "";
+    if(!overlays.length){
+      list.innerHTML = '<div class="empty">Inga overlays ännu.<br/>Klicka "+ Ny PDF-overlay" för att börja.</div>';
+      return;
+    }
+    overlays.forEach(o => {
+      const card = document.createElement("div");
+      card.className = "ov-card";
+      card.innerHTML = `
+        <div class="head"><span class="title">🗺️ ${o.pdfName}</span><span class="badge">Sida ${o.page}</span></div>
+        <div class="body">
+          <div><span>Referenspunkter</span><span class="v">${o.mode}</span></div>
+          <div><span>Transparens</span><span class="v">${o.opacity}%</span></div>
+        </div>
+        <div class="foot">
+          <button data-act="guide">👁 Visa guide</button>
+          <button data-act="hide">Dölj guide</button>
+          <button data-act="ifc">⬇ IFC</button>
+          <button data-act="calib">⬇ Kalibrering</button>
+          <button data-act="del">Ta bort</button>
+        </div>
+      `;
+      card.querySelector('[data-act="guide"]').onclick = async () => {
+        await removeMarkupIds(o.guideMarkupIds);
+        const cornersMM = o.corners.map(c => ({xMM:c.x*1000, yMM:c.y*1000, zMM:c.z*1000}));
+        const color = { r:37,g:99,b:235,a: Math.round(255*(o.opacity/100)) };
+        const edges = [[cornersMM[0],cornersMM[1]],[cornersMM[1],cornersMM[2]],[cornersMM[2],cornersMM[3]],[cornersMM[3],cornersMM[0]],[cornersMM[0],cornersMM[2]],[cornersMM[1],cornersMM[3]]];
+        o.guideMarkupIds = await drawEdgesBatch(o.modelId, edges, color);
+      };
+      card.querySelector('[data-act="hide"]').onclick = async () => { await removeMarkupIds(o.guideMarkupIds); o.guideMarkupIds = []; };
+      card.querySelector('[data-act="ifc"]').onclick = () => downloadTextFile(o.title+".ifc", buildIfcText(o.corners, "data:image/png;base64,", o.title));
+      card.querySelector('[data-act="calib"]').onclick = () => downloadTextFile(o.title+".calibration.json", JSON.stringify(o.calibration,null,2));
+      card.querySelector('[data-act="del"]').onclick = async () => {
+        await removeMarkupIds(o.guideMarkupIds);
+        overlays = overlays.filter(x => x.id !== o.id);
+        renderOverlayList();
+      };
+      list.appendChild(card);
+    });
+  }
+
+  // ---------------- Trimble Connect file access (EXPERIMENTAL) ----------------
+  // Everything in this section is best-effort: the exact REST endpoints for
+  // listing/uploading project files aren't part of the publicly documented
+  // Workspace API, so this derives an API host from document.referrer and
+  // uses the access token from extension.requestPermission(). Expect to
+  // need adjustments here — check "🐞 Rådata" for the actual HTTP errors.
+
+  function resolveApiBaseUrl(){
+    if(apiBaseUrl) return apiBaseUrl;
+    try {
+      if(document.referrer){
+        apiBaseUrl = new URL(document.referrer).origin;
+        return apiBaseUrl;
+      }
+    } catch(e){}
+    apiBaseUrl = "https://app.connect.trimble.com";
+    return apiBaseUrl;
+  }
+
+  async function ensureAccessToken(){
+    if(accessToken) return accessToken;
+    if(!API || !API.extension || !API.extension.requestPermission){
+      throw new Error("extension.requestPermission saknas i denna API-version.");
+    }
+    accessToken = await API.extension.requestPermission("accesstoken");
+    return accessToken;
+  }
+
+  async function getProjectId(){
+    try {
+      const proj = await API.project.getProject();
+      return proj && (proj.id || proj.projectId);
+    } catch(err){
+      log("Kunde inte hämta project id via API.project.getProject():", err.message||err);
+      return null;
+    }
+  }
+
+  async function listProjectPdfFiles(){
+    const token = await ensureAccessToken();
+    const base = resolveApiBaseUrl();
+    const projectId = await getProjectId();
+    if(!projectId) throw new Error("Hittade inget project id.");
+    const url = `${base}/tc/api/2.0/projects/${projectId}/files?type=file`;
+    log("Listar filer via", url);
+    const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    if(!res.ok) throw new Error("HTTP " + res.status + " vid fillistning");
+    const data = await res.json();
+    const items = Array.isArray(data) ? data : (data.items || data.files || []);
+    return items.filter(f => (f.name||"").toLowerCase().endsWith(".pdf"));
+  }
+
+  async function downloadTcFile(fileInfo){
+    const token = await ensureAccessToken();
+    const base = resolveApiBaseUrl();
+    const url = fileInfo.downloadUrl || `${base}/tc/api/2.0/files/${fileInfo.id}/download`;
+    const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    if(!res.ok) throw new Error("HTTP " + res.status + " vid nedladdning");
+    const buf = await res.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  async function uploadTcFile(name, content, mime){
+    const token = await ensureAccessToken();
+    const base = resolveApiBaseUrl();
+    const projectId = await getProjectId();
+    if(!projectId) throw new Error("Hittade inget project id för uppladdning.");
+    const blob = new Blob([content], { type: mime });
+    const form = new FormData();
+    form.append("file", blob, name);
+    const url = `${base}/tc/api/2.0/projects/${projectId}/files`;
+    log("Laddar upp via", url, name);
+    const res = await fetch(url, { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
+    if(!res.ok) throw new Error("HTTP " + res.status + " vid uppladdning av " + name);
+    return await res.json().catch(()=>null);
+  }
+
+  // ---------------- Workspace connection & 3D pick routing ----------------
+
+  async function onWorkspaceEvent(event, data){
+    if(event === "viewer.onModelStateChanged" && data && data.data){
+      const d = data.data;
+      if(Array.isArray(d) && d[0] && d[0].modelId) currentModelIdGuess = d[0].modelId;
+      else if(d.modelId) currentModelIdGuess = d.modelId;
+    }
+    if(event === "viewer.onPicked" && wiz.activeTool === "3d-pick" && wiz.activePairPdfPoint){
+      log("onPicked raw:", data);
+      const point = extractPickPoint(data && data.data ? data.data : data);
+      if(!point || !point.modelId){
+        log("Kunde inte tolka klickpunkten. Se rådata och justera extractPickPoint().");
+        return;
+      }
+      wiz.pairs.push({ pdf: wiz.activePairPdfPoint, world: point });
+      wiz.activePairPdfPoint = null;
+      wiz.activeTool = null;
+      renderPairPills();
+      updateCalibHint();
+    }
+  }
+
+  async function init(){
+    try {
+      API = await TrimbleConnectWorkspace.connect(window.parent, onWorkspaceEvent, 20000);
+      statusEl.textContent = "Ansluten";
+      try {
+        const sel = await API.viewer.getSelection();
+        if(sel && sel[0]) currentModelIdGuess = sel[0].modelId;
+      } catch(e){}
+    } catch(err){
+      statusEl.textContent = "Kunde inte ansluta";
+      console.error(err);
+    }
+  }
+
+  renderOverlayList();
+  init();
+})();
+</script>
+</body>
+</html>

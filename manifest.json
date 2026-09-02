@@ -1,7 +1,7 @@
 {
-  "url": "https://din-domän.se/pdf-overlay/index.html",
+  "url": "https://vfalk-ncc.github.io/pdf-overlay/index.html",
   "title": "PDF-overlay",
-  "icon": "https://din-domän.se/pdf-overlay/icon.png",
+  "icon": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQsjv7Fi_V9homE2dmvhgRXbVJho49WnFyFhHUnmPnZPD3m1YDCJYg6uDQ&s=10",
   "description": "Placera och kalibrera PDF-planer/sektioner mot 3D-modellen med referenspunkter, och lås placeringen som en texturerad modell.",
   "extensionType": ["3dviewer"]
 }

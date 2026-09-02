@@ -96,6 +96,10 @@
         <button class="ghost" id="btnPickFromTC">📁 Välj från Trimble Connect</button>
         <button class="ghost" id="btnPickLocal">💻 Ladda upp lokal PDF</button>
       </div>
+      <div class="hint">
+        <label style="margin:6px 0 2px;">Trimble API-värd (avancerat, lämna tomt för auto)</label>
+        <input type="text" id="apiHostOverride" placeholder="t.ex. https://app21.connect.trimble.com" />
+      </div>
       <input type="file" id="localFileInput" accept="application/pdf" style="display:none;" />
       <div id="fileList" style="display:none;"></div>
       <div class="hint" id="sourceStatus"></div>
@@ -887,15 +891,45 @@ END-ISO-10303-21;
   // need adjustments here — check "🐞 Rådata" for the actual HTTP errors.
 
   function resolveApiBaseUrl(){
-    if(apiBaseUrl) return apiBaseUrl;
-    try {
-      if(document.referrer){
-        apiBaseUrl = new URL(document.referrer).origin;
-        return apiBaseUrl;
+    const override = (el("apiHostOverride") && el("apiHostOverride").value || "").trim();
+    if(override) return [override.replace(/\/$/,"")];
+    if(apiBaseUrl) return [apiBaseUrl];
+    let referrerHost = null;
+    try { if(document.referrer) referrerHost = new URL(document.referrer).host; } catch(e){}
+    const candidates = [];
+    if(referrerHost){
+      candidates.push("https://" + referrerHost);
+      // The web UI often lives on web.connect.trimble.com / app.connect.trimble.com
+      // while the REST API lives on app{N}.connect.trimble.com — try common swaps.
+      const swapped = referrerHost.replace(/^(web|app)\./, "app.");
+      if(!candidates.includes("https://"+swapped)) candidates.push("https://"+swapped);
+      for(let n = 1; n <= 25; n++){
+        const h = referrerHost.replace(/^(web|app)(\d*)\./, `app${n}.`);
+        const url = "https://"+h;
+        if(!candidates.includes(url)) candidates.push(url);
       }
-    } catch(e){}
-    apiBaseUrl = "https://app.connect.trimble.com";
-    return apiBaseUrl;
+    }
+    candidates.push("https://app.connect.trimble.com");
+    return candidates;
+  }
+
+  async function fetchWithHostFallback(pathBuilder, options){
+    const hosts = resolveApiBaseUrl();
+    let lastErr = null;
+    for(const host of hosts){
+      const url = host + pathBuilder(host);
+      try {
+        log("Provar", url);
+        const res = await fetch(url, options);
+        if(res.ok){ apiBaseUrl = host; return res; }
+        lastErr = new Error("HTTP " + res.status + " från " + url);
+        log("Ingen träff:", lastErr.message);
+      } catch(err){
+        lastErr = err;
+        log("Nätverksfel mot", url, ":", err.message || err);
+      }
+    }
+    throw lastErr || new Error("Alla värdkandidater misslyckades.");
   }
 
   async function ensureAccessToken(){
@@ -919,13 +953,12 @@ END-ISO-10303-21;
 
   async function listProjectPdfFiles(){
     const token = await ensureAccessToken();
-    const base = resolveApiBaseUrl();
     const projectId = await getProjectId();
     if(!projectId) throw new Error("Hittade inget project id.");
-    const url = `${base}/tc/api/2.0/projects/${projectId}/files?type=file`;
-    log("Listar filer via", url);
-    const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
-    if(!res.ok) throw new Error("HTTP " + res.status + " vid fillistning");
+    const res = await fetchWithHostFallback(
+      () => `/tc/api/2.0/projects/${projectId}/files?type=file`,
+      { headers: { Authorization: "Bearer " + token } }
+    );
     const data = await res.json();
     const items = Array.isArray(data) ? data : (data.items || data.files || []);
     return items.filter(f => (f.name||"").toLowerCase().endsWith(".pdf"));
@@ -933,26 +966,29 @@ END-ISO-10303-21;
 
   async function downloadTcFile(fileInfo){
     const token = await ensureAccessToken();
-    const base = resolveApiBaseUrl();
-    const url = fileInfo.downloadUrl || `${base}/tc/api/2.0/files/${fileInfo.id}/download`;
-    const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
-    if(!res.ok) throw new Error("HTTP " + res.status + " vid nedladdning");
-    const buf = await res.arrayBuffer();
-    return new Uint8Array(buf);
+    if(fileInfo.downloadUrl){
+      const res = await fetch(fileInfo.downloadUrl, { headers: { Authorization: "Bearer " + token } });
+      if(!res.ok) throw new Error("HTTP " + res.status + " vid nedladdning");
+      return new Uint8Array(await res.arrayBuffer());
+    }
+    const res = await fetchWithHostFallback(
+      () => `/tc/api/2.0/files/${fileInfo.id}/download`,
+      { headers: { Authorization: "Bearer " + token } }
+    );
+    return new Uint8Array(await res.arrayBuffer());
   }
 
   async function uploadTcFile(name, content, mime){
     const token = await ensureAccessToken();
-    const base = resolveApiBaseUrl();
     const projectId = await getProjectId();
     if(!projectId) throw new Error("Hittade inget project id för uppladdning.");
     const blob = new Blob([content], { type: mime });
     const form = new FormData();
     form.append("file", blob, name);
-    const url = `${base}/tc/api/2.0/projects/${projectId}/files`;
-    log("Laddar upp via", url, name);
-    const res = await fetch(url, { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
-    if(!res.ok) throw new Error("HTTP " + res.status + " vid uppladdning av " + name);
+    const res = await fetchWithHostFallback(
+      () => `/tc/api/2.0/projects/${projectId}/files`,
+      { method: "POST", headers: { Authorization: "Bearer " + token }, body: form }
+    );
     return await res.json().catch(()=>null);
   }
 

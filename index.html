@@ -665,7 +665,7 @@
   function rasterizeCurrentPage(){
     // Re-render the selected page at higher resolution for use as an IFC texture.
     return wiz.pdfDoc.getPage(wiz.pageNum).then(async page => {
-      const scale = 2; // ~144 DPI-ish, keeps texture reasonably sharp but not huge
+      const scale = 1.2; // keep the data: URI reasonably short; raise later if quality is too low
       const vp = page.getViewport({ scale });
       const c = document.createElement("canvas");
       c.width = vp.width; c.height = vp.height;
@@ -736,9 +736,9 @@
 
     // Texture: planar automatic UV generation + image texture via data: URI
     const texCoordGenId = ref();
-    P(texCoordGenId, `IFCTEXTURECOORDINATEGENERATOR((${tessId}),$,'COORD')`);
+    P(texCoordGenId, `IFCTEXTURECOORDINATEGENERATOR((${tessId}),$,'COORD',$)`);
     const imgTexId = ref();
-    P(imgTexId, `IFCIMAGETEXTURE((${tessId}),$,.FALSE.,.FALSE.,$,$,'${dataUrl.replace(/'/g,"")}')`);
+    P(imgTexId, `IFCIMAGETEXTURE(.F.,.F.,$,$,$,'${dataUrl.replace(/'/g,"")}')`);
     const surfStyleId = ref();
     P(surfStyleId, `IFCSURFACESTYLEWITHTEXTURES((${imgTexId}))`);
     const surfStyleWrapId = ref();

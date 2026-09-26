@@ -78,6 +78,7 @@
   .inline label{margin:0;display:flex;align-items:center;gap:4px;}
   .inline select, .inline input[type=number]{width:auto;}
   input[type=color]{width:34px;height:24px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;}
+  .angle-row label{margin-top:8px;}
   .kv{font-family:Consolas,monospace;font-size:11px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;}
   #debugLog{font-size:10.5px;color:var(--text-muted);padding:6px 12px;border-top:1px solid var(--border);max-height:90px;overflow-y:auto;white-space:pre-wrap;display:none;}
   #debugLog.open{display:block;}
@@ -261,14 +262,55 @@
     </div>
 
     <div class="step disabled" id="dwgStepAdjust">
-      <h3>Steg 3 — Finjustera</h3>
+      <h3>Steg 3 — Finjustera och rotera</h3>
+      <div class="hint">Fungerar med eller utan punktparen i Steg 2. Allt läggs på direkt i 3D-vyn.</div>
       <div class="row">
         <div><label>Extra X (m)</label><input type="number" step="0.01" id="dwgAdjX" value="0"></div>
         <div><label>Extra Y (m)</label><input type="number" step="0.01" id="dwgAdjY" value="0"></div>
         <div><label>Extra Z (m)</label><input type="number" step="0.01" id="dwgAdjZ" value="0"></div>
       </div>
-      <label>Extra vridning kring punkt 1 (grader): <span id="dwgRotVal">0.0°</span></label>
-      <input type="range" id="dwgAdjRot" min="-10" max="10" value="0" step="0.1">
+
+      <label>Vridpunkt för X/Y/Z-rotationen</label>
+      <div class="inline">
+        <span class="hint" id="dwgPivotInfo" style="margin:0;flex:1;"></span>
+        <button class="ghost" id="btnDwgPickPivot">📍 Välj vridpunkt i 3D</button>
+        <button class="ghost" id="btnDwgPivotReset" title="Punkt 1 från Steg 2, annars modellens origo">Standard</button>
+      </div>
+      <div class="angle-row">
+        <label>Rotation X — lutning framåt/bakåt</label>
+        <div class="inline"><input type="range" id="dwgRotX" min="-180" max="180" step="0.5" value="0" style="flex:1;"><input type="number" id="dwgRotXn" step="0.1" value="0" style="width:72px;">°</div>
+      </div>
+      <div class="angle-row">
+        <label>Rotation Y — lutning åt sidan</label>
+        <div class="inline"><input type="range" id="dwgRotY" min="-180" max="180" step="0.5" value="0" style="flex:1;"><input type="number" id="dwgRotYn" step="0.1" value="0" style="width:72px;">°</div>
+      </div>
+      <div class="angle-row">
+        <label>Rotation Z — vridning i planet</label>
+        <div class="inline"><input type="range" id="dwgRotZ" min="-180" max="180" step="0.5" value="0" style="flex:1;"><input type="number" id="dwgRotZn" step="0.1" value="0" style="width:72px;">°</div>
+      </div>
+
+      <div class="box">
+        <h4>↻ Rotera runt en egen linje</h4>
+        <div class="hint" style="margin-bottom:6px;">
+          Klicka två punkter i 3D-vyn — t.ex. längs en väggs fot — så ritas en linje som DWG:n kan fällas
+          runt. Bra för att resa en sektion/fasad (±90°).
+        </div>
+        <div class="inline">
+          <button class="ghost" id="btnDwgAxis">✏️ Rita linje (2 klick)</button>
+          <button class="ghost" id="btnDwgAxisClear">Ta bort linje</button>
+        </div>
+        <div class="hint" id="dwgAxisInfo" style="margin:4px 0;"></div>
+        <div class="inline">
+          <input type="range" id="dwgRotL" min="-180" max="180" step="0.5" value="0" style="flex:1;">
+          <input type="number" id="dwgRotLn" step="0.1" value="0" style="width:72px;">°
+        </div>
+        <div class="inline" style="margin-top:4px;">
+          <button class="ghost" id="btnDwgLm90">−90°</button>
+          <button class="ghost" id="btnDwgL0">0°</button>
+          <button class="ghost" id="btnDwgLp90">+90°</button>
+          <button class="ghost" id="btnDwgL180">180°</button>
+        </div>
+      </div>
       <div class="hint" id="dwgResult" style="margin-top:6px;"></div>
       <div class="kv" id="dwgValues" style="display:none;"></div>
       <div class="row" style="margin-top:6px;">
@@ -1264,7 +1306,11 @@ END-ISO-10303-21;
     applied: {},       // modelId -> senast applicerad placement (getModels speglar inte alltid placeModel)
     base: null,        // placement när punktparen började klickas (punkterna är i den ramen)
     pairs: [], pendingSrc: null,
-    result: null
+    result: null,
+    pickMode: null,    // null (punktpar) | "pivot" | "axis"
+    pivot: null,       // egen vridpunkt {x,y,z} (m), annars standard
+    axis: null,        // rotationslinje {a, b} (m)
+    axisPts: [], axisMarkupIds: []
   };
   const dwgWizard = el("dwgWizard");
 
@@ -1338,14 +1384,17 @@ END-ISO-10303-21;
       info.appendChild(b);
     }
     el("dwgStepPairs").classList.remove("disabled");
+    el("dwgStepAdjust").classList.remove("disabled");
+    renderPivotInfo();
+    renderAxisInfo();
   }
 
   function resetDwgPairs(){
     dwg.pairs = []; dwg.pendingSrc = null; dwg.result = null;
     dwg.base = dwg.modelId ? currentPlacementOf(dwg.modelId) : null;
-    el("dwgStepAdjust").classList.add("disabled");
+    // Ny bas = nuvarande placering, så alla justeringar börjar om från 0.
     ["dwgAdjX","dwgAdjY","dwgAdjZ"].forEach(id => el(id).value = 0);
-    el("dwgAdjRot").value = 0; el("dwgRotVal").textContent = "0.0°";
+    ["X","Y","Z","L"].forEach(k => { el("dwgRot"+k).value = 0; el("dwgRot"+k+"n").value = 0; });
     el("dwgValues").style.display = "none";
     el("dwgResult").textContent = "";
     renderDwgPairs();
@@ -1354,8 +1403,8 @@ END-ISO-10303-21;
   el("btnDwgUndo").onclick = () => {
     if(dwg.pendingSrc) dwg.pendingSrc = null;
     else if(dwg.pairs.length){ const last = dwg.pairs.pop(); dwg.pendingSrc = last.src; }
-    el("dwgStepAdjust").classList.toggle("disabled", dwg.pairs.length < 2);
     renderDwgPairs();
+    scheduleDwgApply();
   };
 
   function renderDwgPairs(){
@@ -1389,8 +1438,8 @@ END-ISO-10303-21;
       dwg.pairs.push({ src: dwg.pendingSrc, dst: p });
       dwg.pendingSrc = null;
       if(dwg.pairs.length >= 2){
-        el("dwgStepAdjust").classList.remove("disabled");
         applyDwgAlignment();
+        renderPivotInfo();
       }
     }
     renderDwgPairs();
@@ -1401,46 +1450,96 @@ END-ISO-10303-21;
     el("dwgPairHint").innerHTML = hint;
   }
 
-  /* Likformighetstransform i XY ur två punktpar (+ valfri skala/höjd), med
-     Steg 3-justeringarna (vridning kring målpunkt 1 + förskjutning) ovanpå.
-     Returnerar F(p) = s·R·p + t som { cos, sin, s, t }. */
+  // ---- 3x3-matriser (radvis) ----
+  const M3 = {
+    I: () => [[1,0,0],[0,1,0],[0,0,1]],
+    mul: (A,B) => A.map(r => [0,1,2].map(j => r[0]*B[0][j] + r[1]*B[1][j] + r[2]*B[2][j])),
+    apply: (A,v) => ({ x: A[0][0]*v.x + A[0][1]*v.y + A[0][2]*v.z, y: A[1][0]*v.x + A[1][1]*v.y + A[1][2]*v.z, z: A[2][0]*v.x + A[2][1]*v.y + A[2][2]*v.z }),
+    scale: (A,s) => A.map(r => r.map(v => v*s)),
+    // Rodrigues: rotation `deg` grader kring enhetsvektorn u (högerhandsregel)
+    rot: (u, deg) => {
+      const l = Math.hypot(u.x,u.y,u.z) || 1, x = u.x/l, y = u.y/l, z = u.z/l;
+      const a = deg*Math.PI/180, c = Math.cos(a), s = Math.sin(a), t = 1-c;
+      return [[t*x*x+c, t*x*y-s*z, t*x*z+s*y], [t*x*y+s*z, t*y*y+c, t*y*z-s*x], [t*x*z-s*y, t*y*z+s*x, t*z*z+c]];
+    }
+  };
+  const vAdd = (a,b) => ({ x:a.x+b.x, y:a.y+b.y, z:a.z+b.z });
+  const vSub = (a,b) => ({ x:a.x-b.x, y:a.y-b.y, z:a.z-b.z });
+  const angle = k => parseFloat(el("dwgRot"+k+"n").value) || 0;
+
+  /* Hela transformen F(p) = M·p + t (världskoordinater, meter), relativt
+     placeringen när punktparen började klickas (dwg.base):
+       1. Punktparen (om båda finns): likformighet i XY - vridning kring Z,
+          valfri skala/höjd - så att parens mittpunkter sammanfaller.
+       2. Rotation X/Y/Z (världsaxlar, i ordningen X, Y, Z) kring vridpunkten.
+       3. Rotation runt den egna linjen (om ritad).
+       4. Förskjutning X/Y/Z. */
   function computeDwgTransform(){
-    const [p1, p2] = dwg.pairs;
-    const a1 = p1.src, a2 = p2.src, b1 = p1.dst, b2 = p2.dst;
-    const va = { x: a2.x-a1.x, y: a2.y-a1.y }, vb = { x: b2.x-b1.x, y: b2.y-b1.y };
-    const la = Math.hypot(va.x, va.y), lb = Math.hypot(vb.x, vb.y);
-    if(la < 1e-6) throw new Error("De två DWG-punkterna ligger på samma ställe — välj punkter långt ifrån varandra.");
-    const theta = Math.atan2(vb.y, vb.x) - Math.atan2(va.y, va.x);
-    const s = el("dwgAllowScale").checked ? lb/la : 1;
-    const c = Math.cos(theta), sn = Math.sin(theta);
-    const R = (p) => ({ x: c*p.x - sn*p.y, y: sn*p.x + c*p.y });
-    // mittpunkterna ska sammanfalla (fördelar ev. avvikelse jämnt på båda paren)
-    const am = { x:(a1.x+a2.x)/2, y:(a1.y+a2.y)/2, z:(a1.z+a2.z)/2 };
-    const bm = { x:(b1.x+b2.x)/2, y:(b1.y+b2.y)/2, z:(b1.z+b2.z)/2 };
-    const Ram = R(am);
-    let t = { x: bm.x - s*Ram.x, y: bm.y - s*Ram.y, z: el("dwgMatchZ").checked ? bm.z - s*am.z : am.z - s*am.z };
+    let M0 = M3.I(), t0 = { x:0, y:0, z:0 }, s = 1, R0 = M3.I();
+    let err = null, distA = null, distB = null, thetaDeg = 0;
+    if(dwg.pairs.length >= 2){
+      const [p1, p2] = dwg.pairs;
+      const a1 = p1.src, a2 = p2.src, b1 = p1.dst, b2 = p2.dst;
+      const va = { x: a2.x-a1.x, y: a2.y-a1.y }, vb = { x: b2.x-b1.x, y: b2.y-b1.y };
+      distA = Math.hypot(va.x, va.y); distB = Math.hypot(vb.x, vb.y);
+      if(distA < 1e-6) throw new Error("De två DWG-punkterna ligger på samma ställe — välj punkter långt ifrån varandra.");
+      thetaDeg = (Math.atan2(vb.y, vb.x) - Math.atan2(va.y, va.x)) * 180/Math.PI;
+      s = el("dwgAllowScale").checked ? distB/distA : 1;
+      R0 = M3.rot({x:0,y:0,z:1}, thetaDeg);
+      M0 = M3.scale(R0, s);
+      // mittpunkterna ska sammanfalla (fördelar ev. avvikelse jämnt på båda paren)
+      const am = { x:(a1.x+a2.x)/2, y:(a1.y+a2.y)/2, z:(a1.z+a2.z)/2 };
+      const bm = { x:(b1.x+b2.x)/2, y:(b1.y+b2.y)/2, z:(b1.z+b2.z)/2 };
+      const Mam = M3.apply(M0, am);
+      t0 = { x: bm.x - Mam.x, y: bm.y - Mam.y, z: el("dwgMatchZ").checked ? bm.z - Mam.z : am.z - Mam.z };
+      const F0 = p => vAdd(M3.apply(M0, p), t0);
+      err = [[a1,b1],[a2,b2]].map(([a,b]) => { const f = F0(a); return Math.hypot(f.x-b.x, f.y-b.y); });
+    }
 
-    // Justeringar: vridning Δ kring b1, sedan förskjutning.
-    const dRad = (parseFloat(el("dwgAdjRot").value)||0) * Math.PI/180;
-    const dc = Math.cos(dRad), ds = Math.sin(dRad);
+    const pv = currentPivot(M0, t0);
+    const Rxyz = M3.mul(M3.rot({x:0,y:0,z:1}, angle("Z")), M3.mul(M3.rot({x:0,y:1,z:0}, angle("Y")), M3.rot({x:1,y:0,z:0}, angle("X"))));
+    let Rl = M3.I(), c = { x:0, y:0, z:0 };
+    if(dwg.axis){ Rl = M3.rot(vSub(dwg.axis.b, dwg.axis.a), angle("L")); c = dwg.axis.a; }
     const off = { x: parseFloat(el("dwgAdjX").value)||0, y: parseFloat(el("dwgAdjY").value)||0, z: parseFloat(el("dwgAdjZ").value)||0 };
-    const tr = { x: t.x - b1.x, y: t.y - b1.y };
-    t = { x: dc*tr.x - ds*tr.y + b1.x + off.x, y: ds*tr.x + dc*tr.y + b1.y + off.y, z: t.z + off.z };
-    const cosT = Math.cos(theta + dRad), sinT = Math.sin(theta + dRad);
 
-    const F = (p) => ({ x: s*(cosT*p.x - sinT*p.y) + t.x, y: s*(sinT*p.x + cosT*p.y) + t.y, z: s*p.z + t.z });
-    const err = [ [a1,b1], [a2,b2] ].map(([a,b]) => { const f = F(a); return Math.hypot(f.x-b.x, f.y-b.y); });
-    return { cos: cosT, sin: sinT, s, t, F, err, distA: la, distB: lb, thetaDeg: (theta + dRad) * 180/Math.PI };
+    // G(q) = Rl·(Rxyz·(q - pv) + pv - c) + c + off, applicerat på F0(p) = M0·p + t0
+    const RR = M3.mul(Rl, Rxyz);
+    const M = M3.mul(RR, M0);
+    const inner = vSub(vAdd(M3.apply(Rxyz, vSub(t0, pv)), pv), c);
+    const t = vAdd(vAdd(M3.apply(Rl, inner), c), off);
+    const Rot = M3.mul(RR, R0);             // bara rotationen (utan skala) - för axlarna
+    return { M, t, Rot, s, F: p => vAdd(M3.apply(M, p), t), err, distA, distB, thetaDeg };
+  }
+
+  /* Vridpunkt: egen (📍), annars målpunkt 1 från paren, annars modellens origo. */
+  function currentPivot(M0, t0){
+    if(dwg.pivot) return dwg.pivot;
+    if(dwg.pairs.length >= 1) return dwg.pairs[0].dst;
+    const P0 = dwg.base ? { x: dwg.base.position.x/1000, y: dwg.base.position.y/1000, z: dwg.base.position.z/1000 } : { x:0, y:0, z:0 };
+    return vAdd(M3.apply(M0, P0), t0);
+  }
+  function renderPivotInfo(){
+    const f = p => `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+    el("dwgPivotInfo").textContent = dwg.pickMode === "pivot" ? "Klicka vridpunkten i 3D-vyn…"
+      : dwg.pivot ? `Egen punkt ${f(dwg.pivot)}`
+      : dwg.pairs.length ? "Punkt 1 från Steg 2 (i modellen)" : "Modellens origo";
+  }
+  function renderAxisInfo(){
+    const f = p => `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+    el("dwgAxisInfo").textContent = dwg.pickMode === "axis"
+      ? `Klicka punkt ${dwg.axisPts.length+1} av 2 för linjen i 3D-vyn…`
+      : dwg.axis ? `Linje ${f(dwg.axis.a)} → ${f(dwg.axis.b)} (${Math.hypot(...Object.values(vSub(dwg.axis.b, dwg.axis.a))).toFixed(2)} m).`
+      : "Ingen linje ritad.";
+    ["dwgRotL","dwgRotLn","btnDwgLm90","btnDwgL0","btnDwgLp90","btnDwgL180"].forEach(id => el(id).disabled = !dwg.axis);
   }
 
   function transformPlacement(base, T){
-    const rot = v => ({ x: T.cos*v.x - T.sin*v.y, y: T.sin*v.x + T.cos*v.y, z: v.z });
     const P0 = { x: base.position.x/1000, y: base.position.y/1000, z: base.position.z/1000 };
     const P1 = T.F(P0);
     return {
       position: { x: P1.x*1000, y: P1.y*1000, z: P1.z*1000 },
-      axis: rot(base.axis),
-      refDirection: rot(base.refDirection),
+      axis: M3.apply(T.Rot, base.axis),
+      refDirection: M3.apply(T.Rot, base.refDirection),
       scale: base.scale * T.s
     };
   }
@@ -1454,7 +1553,7 @@ END-ISO-10303-21;
 
   let dwgTimer = null;
   async function applyDwgAlignment(){
-    if(dwg.pairs.length < 2 || !dwg.base) return;
+    if(!dwg.base || !dwg.modelId) return;
     let T;
     try { T = computeDwgTransform(); }
     catch(err){ el("dwgResult").textContent = err.message; return; }
@@ -1467,26 +1566,101 @@ END-ISO-10303-21;
       return;
     }
     dwg.result = { T, placement };
-    const scaleNote = el("dwgAllowScale").checked
-      ? `Skala ${T.s.toFixed(4)}×.`
-      : (Math.abs(T.distB/T.distA - 1) > 0.01
-          ? `⚠ Avståndet mellan punkterna skiljer ${((T.distB/T.distA - 1)*100).toFixed(1)} % mellan DWG och modell — kryssa i "Tillåt skalning" om DWG:n har fel skala/enhet.`
-          : "");
-    el("dwgResult").textContent = `✓ Inriktad. Vridning ${T.thetaDeg.toFixed(2)}°. Kvarvarande avvikelse: par 1 ${fmtDist(T.err[0])}, par 2 ${fmtDist(T.err[1])}. ${scaleNote}`;
-    const rotZ = Math.atan2(placement.refDirection.y, placement.refDirection.x) * 180/Math.PI;
+    if(T.err){
+      const scaleNote = el("dwgAllowScale").checked
+        ? `Skala ${T.s.toFixed(4)}×.`
+        : (Math.abs(T.distB/T.distA - 1) > 0.01
+            ? `⚠ Avståndet mellan punkterna skiljer ${((T.distB/T.distA - 1)*100).toFixed(1)} % mellan DWG och modell — troligen hamnade ett klick på fel ställe (ångra och klicka om), eller så har DWG:n fel skala ("Tillåt skalning").`
+            : "");
+      el("dwgResult").textContent = `✓ Inriktad. Vridning ${T.thetaDeg.toFixed(2)}°. Kvarvarande avvikelse: par 1 ${fmtDist(T.err[0])}, par 2 ${fmtDist(T.err[1])}. ${scaleNote}`;
+    } else {
+      el("dwgResult").textContent = "✓ Placering uppdaterad.";
+    }
+    // Eulervinklar för hela orienteringen (R = Rz·Ry·Rx) - för Positionsinställningar.
+    const X = placement.refDirection, Z = placement.axis;
+    const Y = { x: Z.y*X.z - Z.z*X.y, y: Z.z*X.x - Z.x*X.z, z: Z.x*X.y - Z.y*X.x };
+    const R = [[X.x, Y.x, Z.x], [X.y, Y.y, Z.y], [X.z, Y.z, Z.z]];
+    const deg = r => r*180/Math.PI;
+    const ry = deg(Math.asin(Math.max(-1, Math.min(1, -R[2][0]))));
+    const rx = deg(Math.atan2(R[2][1], R[2][2]));
+    const rz = deg(Math.atan2(R[1][0], R[0][0]));
     el("dwgValues").style.display = "block";
     el("dwgValues").textContent =
       `Positionsinställningar (för att spara permanent i Trimble Connect):\n`
       + `  X: ${(placement.position.x/1000).toFixed(3)} m\n`
       + `  Y: ${(placement.position.y/1000).toFixed(3)} m\n`
       + `  Z: ${(placement.position.z/1000).toFixed(3)} m\n`
-      + `  Rotation kring Z: ${rotZ.toFixed(3)}°\n`
+      + `  Rotation X: ${rx.toFixed(3)}°   Y: ${ry.toFixed(3)}°   Z: ${rz.toFixed(3)}°\n`
       + `  Skala: ${placement.scale.toFixed(5)}`;
   }
   function fmtDist(m){ return m < 1 ? `${(m*1000).toFixed(0)} mm` : `${m.toFixed(2)} m`; }
   function scheduleDwgApply(){ clearTimeout(dwgTimer); dwgTimer = setTimeout(applyDwgAlignment, 250); }
   ["dwgAdjX","dwgAdjY","dwgAdjZ"].forEach(id => el(id).oninput = scheduleDwgApply);
-  el("dwgAdjRot").oninput = () => { el("dwgRotVal").textContent = parseFloat(el("dwgAdjRot").value).toFixed(1) + "°"; scheduleDwgApply(); };
+  // Reglage + sifferfält för varje vinkel, synkade åt båda hållen.
+  ["X","Y","Z","L"].forEach(k => {
+    const r = el("dwgRot"+k), n = el("dwgRot"+k+"n");
+    r.oninput = () => { n.value = r.value; scheduleDwgApply(); };
+    n.oninput = () => { const v = parseFloat(n.value)||0; r.value = Math.max(-180, Math.min(180, v)); scheduleDwgApply(); };
+  });
+  const setLine = v => { el("dwgRotL").value = v; el("dwgRotLn").value = v; scheduleDwgApply(); };
+  el("btnDwgLm90").onclick = () => setLine(-90);
+  el("btnDwgL0").onclick = () => setLine(0);
+  el("btnDwgLp90").onclick = () => setLine(90);
+  el("btnDwgL180").onclick = () => setLine(180);
+
+  el("btnDwgPickPivot").onclick = () => { dwg.pickMode = dwg.pickMode === "pivot" ? null : "pivot"; renderPivotInfo(); };
+  el("btnDwgPivotReset").onclick = () => { dwg.pivot = null; dwg.pickMode = null; renderPivotInfo(); scheduleDwgApply(); };
+  el("btnDwgAxis").onclick = () => { dwg.pickMode = "axis"; dwg.axisPts = []; renderAxisInfo(); };
+  el("btnDwgAxisClear").onclick = async () => {
+    await removeMarkupIds(dwg.axisMarkupIds);
+    dwg.axisMarkupIds = []; dwg.axis = null; dwg.axisPts = [];
+    if(dwg.pickMode === "axis") dwg.pickMode = null;
+    setLine(0);
+    renderAxisInfo();
+  };
+
+  /* Klick i 3D för vridpunkt eller rotationslinje. Returnerar true om klicket togs om hand. */
+  async function onDwgToolPick(point){
+    const p = { x: point.xMM/1000, y: point.yMM/1000, z: point.zMM/1000 };
+    if(dwg.pickMode === "pivot"){
+      // Vridpunkten ska gälla från nuvarande läge - byt till ny bas så att
+      // tidigare vinklar inte plötsligt roterar kring en annan punkt.
+      bakeCurrentAsBase();
+      dwg.pivot = p; dwg.pickMode = null;
+      renderPivotInfo();
+      return true;
+    }
+    if(dwg.pickMode === "axis"){
+      dwg.axisPts.push({ ...p, modelId: point.modelId });
+      if(dwg.axisPts.length >= 2){
+        const [a, b] = dwg.axisPts;
+        if(Math.hypot(b.x-a.x, b.y-a.y, b.z-a.z) < 0.01){ dwg.axisPts = [a]; renderAxisInfo(); return true; }
+        bakeCurrentAsBase();
+        dwg.axis = { a, b }; dwg.pickMode = null;
+        await removeMarkupIds(dwg.axisMarkupIds);
+        const mm = q => ({ xMM: q.x*1000, yMM: q.y*1000, zMM: q.z*1000 });
+        dwg.axisMarkupIds = await drawEdgesBatch(a.modelId || b.modelId, [[mm(a), mm(b)]], { r:255, g:140, b:0, a:255 });
+      }
+      renderAxisInfo();
+      return true;
+    }
+    return false;
+  }
+
+  /* Gör nuvarande placering till ny bas och nollställ justeringarna, utan
+     att modellen flyttar sig (punktparen "bakas in"). */
+  function bakeCurrentAsBase(){
+    if(!dwg.modelId) return;
+    const pairs = dwg.pairs;
+    dwg.base = currentPlacementOf(dwg.modelId);
+    dwg.pairs = []; dwg.pendingSrc = null;
+    ["dwgAdjX","dwgAdjY","dwgAdjZ"].forEach(id => el(id).value = 0);
+    ["X","Y","Z","L"].forEach(k => { el("dwgRot"+k).value = 0; el("dwgRot"+k+"n").value = 0; });
+    if(pairs.length >= 2){
+      renderDwgPairs();
+      el("dwgPairHint").textContent = "Punktparens inriktning är inbakad i placeringen. Klicka nya par om du vill göra om den.";
+    }
+  }
   el("dwgAllowScale").onchange = scheduleDwgApply;
   el("dwgMatchZ").onchange = scheduleDwgApply;
 
@@ -1625,11 +1799,12 @@ END-ISO-10303-21;
       if(Array.isArray(d) && d[0] && d[0].modelId) currentModelIdGuess = d[0].modelId;
       else if(d.modelId) currentModelIdGuess = d.modelId;
     }
-    if(event === "viewer.onPicked" && dwgWizard.classList.contains("open") && dwg.modelId && dwg.pairs.length < 2
-       && !el("dwgStepPairs").classList.contains("disabled")){
+    if(event === "viewer.onPicked" && dwgWizard.classList.contains("open") && dwg.modelId){
       log("onPicked (DWG) raw:", data);
       const point = extractPickPoint(data && data.data ? data.data : data);
-      if(point) onDwgPick(point);
+      if(!point) return;
+      if(await onDwgToolPick(point)){ scheduleDwgApply(); return; }
+      if(dwg.pairs.length < 2) onDwgPick(point);
       return;
     }
     if(event === "viewer.onModelStateChanged" && dwgWizard.classList.contains("open")){

@@ -90,8 +90,22 @@ Flyttar och vrider en inläst modell (DWG, DXF eller IFC) direkt i vyn med
    - **Tillåt skalning:** för DWG:er i fel enhet, till exempel mm i stället
      för m. Appen varnar när avstånden mellan punkterna inte stämmer.
    - **Flytta till modellens höjd:** lyfter DWG:n till målpunkternas höjd.
-4. Finjustera med extra X/Y/Z och vridning kring punkt 1. Ändringarna
-   läggs på direkt.
+4. **Finjustera och rotera (Steg 3).** Fungerar även utan punktparen.
+   Allt läggs på direkt.
+   - **Förskjutning** X/Y/Z i meter.
+   - **Rotation X / Y / Z** (lutning framåt och bakåt, åt sidan, vridning
+     i planet): reglage (±180°) och sifferfält för exakta grader. Vridpunkt
+     är punkt 1 från paren, annars modellens origo. Med **📍 Välj
+     vridpunkt i 3D** väljer du en egen.
+   - **Rotera runt en egen linje:** **✏️ Rita linje** och klicka två
+     punkter i 3D, till exempel längs en väggs fot. Linjen ritas ut i
+     orange, och reglaget (±180°, snabbknappar −90/0/+90/180) fäller
+     DWG:n runt den. Bra för att resa en sektion eller fasad.
+   - **Inbakning:** när du väljer en ny vridpunkt eller ritar en ny linje
+     bakas nuvarande läge in som ny bas och vinklarna nollställs. Du
+     bygger alltså vidare från där DWG:n står.
+   - **Positionsinställningar:** värdena visar position, rotation X/Y/Z
+     (R = Rz·Ry·Rx) och skala.
 
 Placeringen sparas i webbläsaren ("Använd sparad placering" nästa gång).
 För att spara permanent för alla i projektet: för över de visade värdena

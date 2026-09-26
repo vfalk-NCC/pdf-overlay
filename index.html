@@ -72,6 +72,13 @@
   .ov-card .foot{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;padding:6px 10px;border-top:1px solid var(--border);}
   .ov-card .foot button{padding:3px 8px;font-size:11px;border-radius:6px;}
 
+  .box{border:1px solid var(--accent);border-radius:8px;padding:8px 10px;margin:8px 0;background:#eef4ff;}
+  .box h4{margin:0 0 6px;font-size:12px;}
+  .inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .inline label{margin:0;display:flex;align-items:center;gap:4px;}
+  .inline select, .inline input[type=number]{width:auto;}
+  input[type=color]{width:34px;height:24px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;}
+  .kv{font-family:Consolas,monospace;font-size:11px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;}
   #debugLog{font-size:10.5px;color:var(--text-muted);padding:6px 12px;border-top:1px solid var(--border);max-height:90px;overflow-y:auto;white-space:pre-wrap;display:none;}
   #debugLog.open{display:block;}
 </style>
@@ -85,6 +92,7 @@
 
   <div class="toolbar">
     <button class="primary" id="btnNewOverlay">+ Ny PDF-overlay</button>
+    <button class="primary" id="btnDwgAlign">📐 Vrid in DWG/modell</button>
     <button class="ghost" id="btnDebugToggle">🐞 Rådata</button>
   </div>
 
@@ -155,6 +163,28 @@
       </div>
       <div class="row">
         <button class="ghost" id="btnUpdateGuide">↻ Uppdatera guide i 3D-vyn</button>
+        <label style="margin:0;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="adjLive" checked> Uppdatera live</label>
+      </div>
+      <div class="box">
+        <h4>⚡ Visa ritningen i 3D (linjer)</h4>
+        <div class="hint" style="margin-bottom:6px;">
+          Trimble Connect kan inte visa PDF-bilder i 3D — men en PDF utskriven från CAD består av riktiga
+          linjer. De ritas här direkt i 3D-vyn med samma kalibrering som guiden (skarpa i alla zoomlägen,
+          ingen uppladdning). Fyllningar och riktig PDF-text följer inte med.
+        </div>
+        <div class="inline">
+          <button class="primary" id="btnShowLines">⚡ Visa linjer</button>
+          <button class="ghost" id="btnHideLines">Ta bort</button>
+          <label>Detalj
+            <select id="linesDetail">
+              <option value="5000">Låg</option>
+              <option value="15000" selected>Normal</option>
+              <option value="40000">Hög</option>
+            </select>
+          </label>
+          <label>Färg <input type="color" id="linesColor" value="#d81b60"></label>
+        </div>
+        <div class="hint" id="linesStatus" style="margin:6px 0 0;"></div>
       </div>
       <div class="hint">
         Guiden ritas som fyra hörnpunkter + kryssdiagonaler (samma linjeteknik
@@ -177,12 +207,81 @@
         <button class="ghost" id="btnDownloadIfc" disabled>⬇ Ladda ner IFC</button>
         <button class="ghost" id="btnDownloadCalib" disabled>⬇ Ladda ner kalibrering (JSON)</button>
       </div>
+      <div class="row">
+        <button class="ghost" id="btnDownloadDxf">⬇ Ladda ner DXF (linjer i världskoordinater)</button>
+        <button class="ghost" id="btnUploadDxf">☁ Ladda upp DXF till projektet</button>
+      </div>
+      <div class="hint">
+        DXF är ett format Trimble Connect själv visar i 3D. Filen innehåller PDF:ens linjer redan
+        placerade i modellens koordinater (meter) — ett permanent alternativ till linjerna ovan, som
+        försvinner när vyn laddas om. Hamnar DXF:en fel efter uppladdning kan den vridas in med
+        "📐 Vrid in DWG/modell".
+      </div>
       <div class="hint" id="lockStatus"></div>
       <div class="row">
         <button class="ghost" id="btnCancelWizard">Avbryt / stäng guiden</button>
       </div>
     </div>
 
+  </div>
+
+  <!-- ===== Vrid in DWG/modell (viewer.placeModel) ===== -->
+  <div class="wizard" id="dwgWizard">
+    <div class="step" id="dwgStepModel">
+      <h3>📐 Steg 1 — Välj DWG/modell att vrida in</h3>
+      <div class="hint">
+        Öppna DWG:n i 3D-vyn först (Modeller-panelen, eller markera DWG + IFC i fillistan och "Visa i 3D").
+        Fungerar för alla inlästa modeller — DWG, DXF, IFC.
+      </div>
+      <div class="inline">
+        <select id="dwgModelSelect" style="flex:1;min-width:0;"></select>
+        <button class="ghost" id="btnDwgRefresh" title="Läs om listan med inlästa modeller">↻</button>
+        <button class="ghost" id="btnDwgClose">Stäng</button>
+      </div>
+      <div class="hint" id="dwgModelInfo" style="margin-top:6px;"></div>
+    </div>
+
+    <div class="step disabled" id="dwgStepPairs">
+      <h3>Steg 2 — Referenspunkter (2 par)</h3>
+      <div class="hint">
+        För varje par: klicka först en punkt <b>på DWG:n</b> (t.ex. ett axelkryss), sedan
+        <b>samma punkt i modellen</b>. Två par räcker för att räkna ut vridning och förflyttning.
+        Välj punkter långt ifrån varandra för bäst precision.
+      </div>
+      <div class="pillrow" id="dwgPills"></div>
+      <div class="hint" id="dwgPairHint"></div>
+      <div class="inline">
+        <label><input type="checkbox" id="dwgAllowScale"> Tillåt skalning (om DWG:n har fel enhet/skala)</label>
+        <label><input type="checkbox" id="dwgMatchZ" checked> Flytta till modellens höjd</label>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <button class="ghost" id="btnDwgUndo">↶ Ångra senaste punkten</button>
+        <button class="ghost" id="btnDwgClear">Rensa punkter</button>
+      </div>
+    </div>
+
+    <div class="step disabled" id="dwgStepAdjust">
+      <h3>Steg 3 — Finjustera</h3>
+      <div class="row">
+        <div><label>Extra X (m)</label><input type="number" step="0.01" id="dwgAdjX" value="0"></div>
+        <div><label>Extra Y (m)</label><input type="number" step="0.01" id="dwgAdjY" value="0"></div>
+        <div><label>Extra Z (m)</label><input type="number" step="0.01" id="dwgAdjZ" value="0"></div>
+      </div>
+      <label>Extra vridning kring punkt 1 (grader): <span id="dwgRotVal">0.0°</span></label>
+      <input type="range" id="dwgAdjRot" min="-10" max="10" value="0" step="0.1">
+      <div class="hint" id="dwgResult" style="margin-top:6px;"></div>
+      <div class="kv" id="dwgValues" style="display:none;"></div>
+      <div class="row" style="margin-top:6px;">
+        <button class="ghost" id="btnDwgReset">↺ Återställ originalplacering</button>
+        <button class="ghost" id="btnDwgCopy">📋 Kopiera värden</button>
+      </div>
+      <div class="hint" style="margin-top:6px;">
+        Placeringen görs med <code>viewer.placeModel</code> och gäller den här visningen. Den sparas i
+        webbläsaren och läggs på igen nästa gång du öppnar tillägget ("Använd sparad placering"). För att
+        spara den permanent för alla i projektet: för över värdena ovan till Trimble Connects
+        <b>Positionsinställningar</b> för modellen.
+      </div>
+    </div>
   </div>
 
   <div id="listHeader">
@@ -280,9 +379,11 @@
 
   // ---------------- Wizard open/close ----------------
 
-  el("btnNewOverlay").onclick = () => { resetWizard(); wizard.classList.add("open"); };
+  el("btnNewOverlay").onclick = () => { resetWizard(); wizard.classList.add("open"); el("dwgWizard").classList.remove("open"); };
   el("btnCancelWizard").onclick = async () => {
     await removeMarkupIds(wiz.guideMarkupIds);
+    await removeMarkupIds(lineState.ids);
+    lineState.ids = []; lineState.shown = false;
     wizard.classList.remove("open");
     resetWizard();
   };
@@ -512,11 +613,24 @@
 
   // ---------------- Step 4: live adjustment ----------------
 
-  ["adjX","adjY","adjZ"].forEach(id => el(id).oninput = () => { wiz.adjust[id.slice(3).toLowerCase()] = parseFloat(el(id).value)||0; });
-  el("adjRot").oninput = () => { wiz.adjust.rotDeg = parseFloat(el("adjRot").value); el("rotVal").textContent = wiz.adjust.rotDeg + "°"; };
-  el("adjScale").oninput = () => { wiz.adjust.scale = parseFloat(el("adjScale").value); el("scaleVal").textContent = wiz.adjust.scale.toFixed(2) + "×"; };
-  el("adjOpacity").oninput = () => { wiz.adjust.opacity = parseFloat(el("adjOpacity").value); el("opacityVal").textContent = wiz.adjust.opacity + "%"; };
-  el("adjVisible").onchange = () => { wiz.adjust.visible = el("adjVisible").checked; };
+  ["adjX","adjY","adjZ"].forEach(id => el(id).oninput = () => { wiz.adjust[id.slice(3).toLowerCase()] = parseFloat(el(id).value)||0; scheduleLive(); });
+  el("adjRot").oninput = () => { wiz.adjust.rotDeg = parseFloat(el("adjRot").value); el("rotVal").textContent = wiz.adjust.rotDeg + "°"; scheduleLive(); };
+  el("adjScale").oninput = () => { wiz.adjust.scale = parseFloat(el("adjScale").value); el("scaleVal").textContent = wiz.adjust.scale.toFixed(2) + "×"; scheduleLive(); };
+  el("adjOpacity").oninput = () => { wiz.adjust.opacity = parseFloat(el("adjOpacity").value); el("opacityVal").textContent = wiz.adjust.opacity + "%"; scheduleLive(); };
+  el("adjVisible").onchange = () => { wiz.adjust.visible = el("adjVisible").checked; scheduleLive(); };
+  el("elevationInput").oninput = () => scheduleLive();
+
+  // Uppdaterar guiden (och linjerna, om de visas) en stund efter att man
+  // slutat dra i ett reglage - i stället för att kräva "Uppdatera guide".
+  let liveTimer = null;
+  function scheduleLive(){
+    if(!el("adjLive").checked || wiz.pairs.length < wiz.mode) return;
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(async () => {
+      await updateGuide();
+      if(lineState.shown) await drawWizardLines();
+    }, 400);
+  }
 
   // ---- Plane / transform math ----
 
@@ -641,7 +755,8 @@
     return [ {x:0,y:0}, {x:w,y:0}, {x:w,y:h}, {x:0,y:h} ];
   }
 
-  el("btnUpdateGuide").onclick = async () => {
+  el("btnUpdateGuide").onclick = () => updateGuide();
+  async function updateGuide(){
     await removeMarkupIds(wiz.guideMarkupIds);
     wiz.guideMarkupIds = [];
     if(!wiz.adjust.visible) return;
@@ -658,6 +773,241 @@
     ];
     wiz.guideMarkupIds = await drawEdgesBatch(modelId, edges, color);
     el("stepLock").classList.remove("disabled");
+  }
+
+  // ---------------- PDF-linjer direkt i 3D ----------------
+  // Trimble Connect kan inte visa en PDF-bild i 3D-vyn (ingen texturkanal i
+  // Workspace API, och IFC-texturer verkar inte följa med i Trimbles
+  // konvertering). En CAD-utskriven PDF består däremot av riktiga linjer:
+  // de plockas ut ur pdf.js operatorList och ritas med markup.addLineMarkups
+  // genom SAMMA kalibrering som guiden (pdfToWorld), så de hamnar exakt där
+  // guiden visar.
+
+  /* Linjesegment ur en PDF-sidas operatorList, i PDF-användarrymd (punkter) -
+     samma koordinater som referenspunkterna (convertToPdfPoint). Skrivet för
+     pdf.js 3.x (versionen som laddas ovan): constructPath-argumenten är
+     [ [OPS-koder], [platt koordinatlista], minMax ]. Bara vägar som faktiskt
+     ritas (stroke/fill) tas med - inte osynliga klippramar (clip + endPath). */
+  function extractPdfLineSegments(opList, OPS){
+    const IDENT = [1,0,0,1,0,0];
+    const mul = (m1, m2) => [
+      m1[0]*m2[0] + m1[1]*m2[2], m1[0]*m2[1] + m1[1]*m2[3],
+      m1[2]*m2[0] + m1[3]*m2[2], m1[2]*m2[1] + m1[3]*m2[3],
+      m1[4]*m2[0] + m1[5]*m2[2] + m2[4], m1[4]*m2[1] + m1[5]*m2[3] + m2[5],
+    ];
+    const ap = (m, x, y) => [m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5]];
+    const PAINT = new Set([OPS.stroke, OPS.closeStroke, OPS.fill, OPS.eoFill, OPS.fillStroke,
+      OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke].filter(v => v !== undefined));
+    const out = [];
+    const stack = [];
+    let ctm = IDENT, pending = [];
+    for(let i = 0; i < opList.fnArray.length; i++){
+      const fn = opList.fnArray[i], args = opList.argsArray[i];
+      if(fn === OPS.save) stack.push(ctm);
+      else if(fn === OPS.restore) ctm = stack.pop() || IDENT;
+      else if(fn === OPS.transform) ctm = mul(Array.from(args), ctm);
+      else if(PAINT.has(fn)){ for(const sgm of pending) out.push(sgm); pending = []; }
+      else if(fn === OPS.endPath) pending = [];
+      else if(fn === OPS.constructPath && args && Array.isArray(args[0]) && args[1]){
+        const ops = args[0], c = args[1];
+        let j = 0, cx = 0, cy = 0, sx = 0, sy = 0;
+        const line = (x1,y1,x2,y2) => {
+          const [a,b] = ap(ctm,x1,y1), [d,e] = ap(ctm,x2,y2);
+          if(isFinite(a) && isFinite(b) && isFinite(d) && isFinite(e)) pending.push([a,b,d,e]);
+        };
+        const cubic = (x0,y0,x1,y1,x2,y2,x3,y3) => {
+          let px = x0, py = y0;
+          for(let k = 1; k <= 8; k++){
+            const t = k/8, mt = 1-t;
+            const bx = mt*mt*mt*x0 + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3;
+            const by = mt*mt*mt*y0 + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3;
+            line(px,py,bx,by); px = bx; py = by;
+          }
+        };
+        for(const op of ops){
+          if(op === OPS.moveTo){ cx = c[j++]; cy = c[j++]; sx = cx; sy = cy; }
+          else if(op === OPS.lineTo){ const x = c[j++], y = c[j++]; line(cx,cy,x,y); cx = x; cy = y; }
+          else if(op === OPS.curveTo){ const x1=c[j++],y1=c[j++],x2=c[j++],y2=c[j++],x3=c[j++],y3=c[j++]; cubic(cx,cy,x1,y1,x2,y2,x3,y3); cx=x3; cy=y3; }
+          else if(op === OPS.curveTo2){ const x2=c[j++],y2=c[j++],x3=c[j++],y3=c[j++]; cubic(cx,cy,cx,cy,x2,y2,x3,y3); cx=x3; cy=y3; }
+          else if(op === OPS.curveTo3){ const x1=c[j++],y1=c[j++],x3=c[j++],y3=c[j++]; cubic(cx,cy,x1,y1,x3,y3,x3,y3); cx=x3; cy=y3; }
+          else if(op === OPS.closePath){ line(cx,cy,sx,sy); cx = sx; cy = sy; }
+          else if(op === OPS.rectangle){
+            const x = c[j++], y = c[j++], w = c[j++], h = c[j++];
+            line(x,y,x+w,y); line(x+w,y,x+w,y+h); line(x+w,y+h,x,y+h); line(x,y+h,x,y);
+            cx = sx = x; cy = sy = y;
+          }
+          else break;
+        }
+      }
+    }
+    return out;
+  }
+
+  /* Tar bort dubbletter och slår ihop segment som ligger i rad och delar
+     ändpunkt - varje markup kostar prestanda i Trimble. */
+  function simplifySegments(segs){
+    const q = v => Math.round(v*10);          // 0,1 pt
+    const key = (x,y) => q(x)+","+q(y);
+    const seen = new Set(), uniq = [];
+    for(let [x1,y1,x2,y2] of segs){
+      if(Math.hypot(x2-x1, y2-y1) < 0.05) continue;
+      if(x2 < x1 || (x2 === x1 && y2 < y1)){ [x1,y1,x2,y2] = [x2,y2,x1,y1]; }
+      const k = key(x1,y1)+"|"+key(x2,y2);
+      if(seen.has(k)) continue;
+      seen.add(k); uniq.push([x1,y1,x2,y2]);
+    }
+    const byEnd = new Map();
+    uniq.forEach((sg,i) => { for(const k of [key(sg[0],sg[1]), key(sg[2],sg[3])]){ if(!byEnd.has(k)) byEnd.set(k, []); byEnd.get(k).push(i); } });
+    const used = new Uint8Array(uniq.length);
+    const dir = sg => { const dx = sg[2]-sg[0], dy = sg[3]-sg[1], l = Math.hypot(dx,dy)||1; return [dx/l, dy/l]; };
+    const out = [];
+    for(let i = 0; i < uniq.length; i++){
+      if(used[i]) continue;
+      used[i] = 1;
+      let [x1,y1,x2,y2] = uniq[i];
+      const d = dir(uniq[i]);
+      for(const end of [0,1]){
+        for(let guard = 0; guard < 10000; guard++){
+          const px = end ? x2 : x1, py = end ? y2 : y1;
+          const cand = (byEnd.get(key(px,py))||[]).find(j => {
+            if(used[j]) return false;
+            const e = dir(uniq[j]);
+            return Math.abs(d[0]*e[1] - d[1]*e[0]) < 1e-3;
+          });
+          if(cand === undefined) break;
+          used[cand] = 1;
+          const c = uniq[cand];
+          const far = key(c[0],c[1]) === key(px,py) ? [c[2],c[3]] : [c[0],c[1]];
+          if(end){ x2 = far[0]; y2 = far[1]; } else { x1 = far[0]; y1 = far[1]; }
+        }
+      }
+      out.push([x1,y1,x2,y2]);
+    }
+    return out;
+  }
+
+  const lineState = { key: null, segs: null, rawCount: 0, shown: false, ids: [], busy: false, pending: false };
+
+  async function loadPageLines(){
+    const key = `${wiz.pdfSourceName}|${wiz.pdfBytes ? wiz.pdfBytes.length : 0}|${wiz.pageNum}`;
+    if(lineState.key === key && lineState.segs) return lineState.segs;
+    const page = await wiz.pdfDoc.getPage(wiz.pageNum);
+    const opList = await page.getOperatorList();
+    const raw = extractPdfLineSegments(opList, pdfjsLib.OPS);
+    lineState.key = key;
+    lineState.rawCount = raw.length;
+    lineState.segs = simplifySegments(raw);
+    log("PDF-linjer:", raw.length, "råa segment ->", lineState.segs.length, "efter förenkling");
+    return lineState.segs;
+  }
+
+  /* PDF-segment -> världslinjer (meter). Vid fler än maxLines väljs de längsta. */
+  function worldLines(segs, placement, maxLines){
+    let chosen = segs;
+    if(maxLines && segs.length > maxLines){
+      const lu = vecLen(placement.basisU), lv = vecLen(placement.basisV);
+      chosen = segs
+        .map(sg => [sg, Math.hypot((sg[2]-sg[0])*lu, (sg[3]-sg[1])*lv)])
+        .sort((a,b) => b[1]-a[1]).slice(0, maxLines).map(x => x[0]);
+    }
+    return chosen.map(sg => [pdfToWorld(placement, sg[0], sg[1]), pdfToWorld(placement, sg[2], sg[3])]);
+  }
+
+  /* Ritar linjerna i 3D i omgångar om 2000 och ersätter holderns tidigare linjer. */
+  async function drawLineSet(holder, lines, modelId, color, onProgress){
+    await removeMarkupIds(holder.ids);
+    holder.ids = [];
+    const CHUNK = 2000;
+    for(let i = 0; i < lines.length; i += CHUNK){
+      const defs = lines.slice(i, i+CHUNK).map(([a,b]) => ({
+        color,
+        start: makePick(modelId, a.x*1000, a.y*1000, a.z*1000),
+        end: makePick(modelId, b.x*1000, b.y*1000, b.z*1000)
+      }));
+      const added = await API.markup.addLineMarkups(defs);
+      (added || []).forEach(m => { if(m && m.id != null) holder.ids.push(m.id); });
+      if(onProgress) onProgress(Math.min(i+CHUNK, lines.length), lines.length);
+    }
+  }
+
+  async function drawWizardLines(){
+    if(!API || !API.markup || !API.markup.addLineMarkups){ el("linesStatus").textContent = "markup.addLineMarkups finns inte — tillägget måste köras i Trimble Connects 3D-vy."; return; }
+    if(wiz.pairs.length < wiz.mode){ el("linesStatus").textContent = "Sätt referenspunkterna först (Steg 3)."; return; }
+    if(lineState.busy){ lineState.pending = true; return; }
+    lineState.busy = true;
+    try {
+      el("linesStatus").textContent = "Läser ut linjerna ur PDF:en…";
+      const segs = await loadPageLines();
+      if(!segs.length){
+        el("linesStatus").textContent = "Hittade inga linjer i PDF:en — den är troligen skannad (en bild), inte utskriven från CAD.";
+        lineState.shown = false;
+        return;
+      }
+      const maxLines = parseInt(el("linesDetail").value, 10) || 15000;
+      const lines = worldLines(segs, currentPlacement(), maxLines);
+      const color = hexToRgba(el("linesColor").value, 255);
+      const fmt = n => n.toLocaleString("sv-SE");
+      await drawLineSet(lineState, lines, wiz.pairs[0].world.modelId, color,
+        (done, total) => { el("linesStatus").textContent = `Ritar linjer… ${fmt(done)} / ${fmt(total)}`; });
+      lineState.shown = true;
+      el("linesStatus").textContent = `✓ ${fmt(lines.length)} linjer visas i 3D`
+        + (segs.length > lines.length ? ` (de längsta av ${fmt(segs.length)} — höj "Detalj" för fler)` : "")
+        + (el("adjLive").checked ? ". Följer justeringarna." : ".");
+      el("stepLock").classList.remove("disabled");
+    } catch(err){
+      log("Kunde inte rita PDF-linjer:", err.message||err);
+      el("linesStatus").textContent = "Kunde inte rita linjerna: " + (err.message || err);
+    } finally {
+      lineState.busy = false;
+      if(lineState.pending){ lineState.pending = false; drawWizardLines(); }
+    }
+  }
+
+  el("btnShowLines").onclick = () => drawWizardLines();
+  el("btnHideLines").onclick = async () => {
+    lineState.shown = false;
+    await removeMarkupIds(lineState.ids);
+    lineState.ids = [];
+    el("linesStatus").textContent = "Linjerna är borttagna.";
+  };
+  el("linesDetail").onchange = () => { if(lineState.shown) drawWizardLines(); };
+  el("linesColor").onchange = () => { if(lineState.shown) drawWizardLines(); };
+
+  // ---- DXF: linjerna i världskoordinater (meter), för permanent visning ----
+  function buildDxfLines(lines){
+    const pair = (c, v) => c + "\n" + v + "\n";
+    const n = v => (isFinite(v) ? v : 0).toFixed(4);
+    let out = pair(0,"SECTION") + pair(2,"HEADER") + pair(9,"$ACADVER") + pair(1,"AC1015")
+            + pair(9,"$INSUNITS") + pair(70,6) + pair(0,"ENDSEC");
+    out += pair(0,"SECTION") + pair(2,"ENTITIES");
+    for(const [a,b] of lines){
+      out += pair(0,"LINE") + pair(8,"PDF_OVERLAY") + pair(62,6)
+           + pair(10,n(a.x)) + pair(20,n(a.y)) + pair(30,n(a.z))
+           + pair(11,n(b.x)) + pair(21,n(b.y)) + pair(31,n(b.z));
+    }
+    return out + pair(0,"ENDSEC") + pair(0,"EOF");
+  }
+  async function currentDxf(){
+    if(wiz.pairs.length < wiz.mode) throw new Error("Sätt referenspunkterna först (Steg 3).");
+    const segs = await loadPageLines();
+    if(!segs.length) throw new Error("Hittade inga linjer i PDF:en (skannad?).");
+    const title = (wiz.pdfSourceName||"overlay").replace(/\.pdf$/i,"").replace(/[^a-zA-Z0-9_-]/g,"_") + "_s" + wiz.pageNum;
+    return { name: title + "_linjer.dxf", text: buildDxfLines(worldLines(segs, currentPlacement(), 0)) };
+  }
+  el("btnDownloadDxf").onclick = async () => {
+    try { const d = await currentDxf(); downloadTextFile(d.name, d.text); el("lockStatus").textContent = `DXF nedladdad (${d.name}).`; }
+    catch(err){ el("lockStatus").textContent = err.message || String(err); }
+  };
+  el("btnUploadDxf").onclick = async () => {
+    try {
+      const d = await currentDxf();
+      el("lockStatus").textContent = "Laddar upp DXF…";
+      await uploadTcFile(d.name, d.text, "application/dxf");
+      el("lockStatus").textContent = `DXF uppladdad (${d.name}). Öppna den i 3D-vyn från Modeller-panelen.`;
+    } catch(err){
+      log("DXF-uppladdning misslyckades:", err.message||err);
+      el("lockStatus").textContent = "Uppladdningen misslyckades (experimentellt API-anrop, se 🐞 Rådata) — ladda ner DXF:en och ladda upp den manuellt i Trimble Connect.";
+    }
   };
 
   // ---------------- Step 5: lock — generate IFC + calibration JSON ----------------
@@ -820,9 +1170,14 @@ END-ISO-10303-21;
       modelId: wiz.pairs[0].world.modelId,
       opacity: wiz.adjust.opacity,
       guideMarkupIds: wiz.guideMarkupIds,
-      calibration
+      calibration,
+      placement,
+      segs: lineState.segs && lineState.key && lineState.key.endsWith("|" + wiz.pageNum) ? lineState.segs : null,
+      lineColor: el("linesColor").value,
+      lineHolder: { ids: lineState.shown ? lineState.ids : [] }
     });
     wiz.guideMarkupIds = []; // ownership moved to the overlay entry
+    if(lineState.shown){ lineState.ids = []; lineState.shown = false; } // linjerna följer med overlayen
     renderOverlayList();
   };
 
@@ -859,6 +1214,8 @@ END-ISO-10303-21;
         <div class="foot">
           <button data-act="guide">👁 Visa guide</button>
           <button data-act="hide">Dölj guide</button>
+          <button data-act="lines">⚡ Linjer</button>
+          <button data-act="nolines">Dölj linjer</button>
           <button data-act="ifc">⬇ IFC</button>
           <button data-act="calib">⬇ Kalibrering</button>
           <button data-act="del">Ta bort</button>
@@ -872,16 +1229,284 @@ END-ISO-10303-21;
         o.guideMarkupIds = await drawEdgesBatch(o.modelId, edges, color);
       };
       card.querySelector('[data-act="hide"]').onclick = async () => { await removeMarkupIds(o.guideMarkupIds); o.guideMarkupIds = []; };
+      card.querySelector('[data-act="lines"]').onclick = async () => {
+        if(!o.segs || !o.segs.length){ alert('Inga linjer sparade för den här overlayen — klicka "⚡ Visa linjer" i Steg 4 innan du låser.'); return; }
+        await drawLineSet(o.lineHolder, worldLines(o.segs, o.placement, 40000), o.modelId, hexToRgba(o.lineColor, 255));
+      };
+      card.querySelector('[data-act="nolines"]').onclick = async () => { await removeMarkupIds(o.lineHolder.ids); o.lineHolder.ids = []; };
       card.querySelector('[data-act="ifc"]').onclick = () => downloadTextFile(o.title+".ifc", buildIfcText(o.corners, "data:image/png;base64,", o.title));
       card.querySelector('[data-act="calib"]').onclick = () => downloadTextFile(o.title+".calibration.json", JSON.stringify(o.calibration,null,2));
       card.querySelector('[data-act="del"]').onclick = async () => {
         await removeMarkupIds(o.guideMarkupIds);
+        await removeMarkupIds(o.lineHolder.ids);
         overlays = overlays.filter(x => x.id !== o.id);
         renderOverlayList();
       };
       list.appendChild(card);
     });
   }
+
+  // ---------------- 📐 Vrid in DWG/modell (viewer.placeModel) ----------------
+  // En inläst modell (DWG, DXF, IFC …) flyttas/vrids direkt i vyn med
+  // viewer.placeModel(modelId, placement). Användaren klickar två punktpar:
+  // en punkt PÅ DWG:n och motsvarande punkt i modellen. Ur dem räknas en
+  // likformighetstransform i planet (vridning kring Z + förflyttning, valfritt
+  // skala och höjd) som läggs ovanpå modellens placering vid starten.
+  //
+  // ModelPlacement (Workspace API): position (mm), axis (Z-axel), refDirection
+  // (X-axel), scale. Tolkas som värld = position + scale·R·lokal, där R byggs
+  // av refDirection/axis. Klickpunkter från viewer.onPicked är i meter.
+
+  const DWG_STORE_KEY = "pdfoverlay-dwg-placements";
+  const dwg = {
+    models: [], modelId: null,
+    original: {},      // modelId -> placement innan vi rörde modellen (för Återställ)
+    applied: {},       // modelId -> senast applicerad placement (getModels speglar inte alltid placeModel)
+    base: null,        // placement när punktparen började klickas (punkterna är i den ramen)
+    pairs: [], pendingSrc: null,
+    result: null
+  };
+  const dwgWizard = el("dwgWizard");
+
+  const IDENTITY_PLACEMENT = () => ({ position:{x:0,y:0,z:0}, axis:{x:0,y:0,z:1}, refDirection:{x:1,y:0,z:0}, scale:1 });
+  function clonePlacement(p){
+    const d = IDENTITY_PLACEMENT();
+    if(!p) return d;
+    return {
+      position: { ...d.position, ...(p.position||{}) },
+      axis: { ...d.axis, ...(p.axis||{}) },
+      refDirection: { ...d.refDirection, ...(p.refDirection||{}) },
+      scale: typeof p.scale === "number" && p.scale > 0 ? p.scale : 1
+    };
+  }
+  function loadSavedPlacements(){ try { return JSON.parse(localStorage.getItem(DWG_STORE_KEY) || "{}") || {}; } catch(e){ return {}; } }
+  function savePlacement(modelId, placement){
+    try { const all = loadSavedPlacements(); all[modelId] = placement; localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+  }
+
+  el("btnDwgAlign").onclick = async () => {
+    wizard.classList.remove("open");
+    dwgWizard.classList.add("open");
+    await refreshDwgModels();
+  };
+  el("btnDwgClose").onclick = () => { dwgWizard.classList.remove("open"); dwg.pendingSrc = null; };
+  el("btnDwgRefresh").onclick = () => refreshDwgModels();
+
+  async function refreshDwgModels(){
+    const sel = el("dwgModelSelect");
+    if(!API){ el("dwgModelInfo").textContent = "Inte ansluten till Trimble Connect."; return; }
+    let models = [];
+    try { models = await API.viewer.getModels("loaded"); } catch(e){ log("getModels('loaded') misslyckades:", e.message||e); }
+    if(!models || !models.length){
+      try { models = (await API.viewer.getModels()).filter(m => String(m.state||"").toLowerCase() === "loaded"); } catch(e){}
+    }
+    dwg.models = models || [];
+    log("Inlästa modeller:", dwg.models.map(m => ({ id:m.id, name:m.name, type:m.type, placement:m.placement })));
+    const isDrawing = m => /\.(dwg|dxf)$/i.test(m.name||"") || /dwg|dxf/i.test(m.type||"");
+    const sorted = [...dwg.models].sort((a,b) => (isDrawing(b) - isDrawing(a)) || String(a.name).localeCompare(b.name));
+    sel.innerHTML = sorted.length
+      ? sorted.map(m => `<option value="${m.id}">${isDrawing(m) ? "📐 " : "🧊 "}${(m.name||m.id).replace(/</g,"&lt;")}</option>`).join("")
+      : '<option value="">Inga inlästa modeller — öppna DWG:n i 3D-vyn och klicka ↻</option>';
+    const keep = dwg.modelId && sorted.some(m => m.id === dwg.modelId) ? dwg.modelId : (sorted[0] && sorted[0].id);
+    // Byt bara modell (och nollställ punktparen) om valet faktiskt ändrats -
+    // listan laddas om vid varje onModelStateChanged, som placeModel själv kan utlösa.
+    if(keep){ sel.value = keep; if(keep !== dwg.modelId || !dwg.base) selectDwgModel(keep); }
+    else { el("dwgStepPairs").classList.add("disabled"); el("dwgModelInfo").textContent = ""; }
+  }
+  el("dwgModelSelect").onchange = () => selectDwgModel(el("dwgModelSelect").value);
+
+  function currentPlacementOf(modelId){
+    if(dwg.applied[modelId]) return clonePlacement(dwg.applied[modelId]);
+    const spec = dwg.models.find(m => m.id === modelId);
+    return clonePlacement(spec && spec.placement);
+  }
+
+  function selectDwgModel(modelId){
+    if(!modelId) return;
+    dwg.modelId = modelId;
+    if(!dwg.original[modelId]) dwg.original[modelId] = currentPlacementOf(modelId);
+    resetDwgPairs();
+    const spec = dwg.models.find(m => m.id === modelId);
+    const saved = loadSavedPlacements()[modelId];
+    const info = el("dwgModelInfo");
+    info.innerHTML = `Vald: <b>${(spec && spec.name || modelId).replace(/</g,"&lt;")}</b>. Klicka punktpar i Steg 2.`;
+    if(saved){
+      const b = document.createElement("button");
+      b.className = "ghost"; b.textContent = "↺ Använd sparad placering";
+      b.onclick = async () => { await applyPlacement(modelId, clonePlacement(saved)); resetDwgPairs(); info.lastChild && (info.lastChild.textContent = "✓ Sparad placering tillagd"); };
+      info.appendChild(document.createElement("br"));
+      info.appendChild(b);
+    }
+    el("dwgStepPairs").classList.remove("disabled");
+  }
+
+  function resetDwgPairs(){
+    dwg.pairs = []; dwg.pendingSrc = null; dwg.result = null;
+    dwg.base = dwg.modelId ? currentPlacementOf(dwg.modelId) : null;
+    el("dwgStepAdjust").classList.add("disabled");
+    ["dwgAdjX","dwgAdjY","dwgAdjZ"].forEach(id => el(id).value = 0);
+    el("dwgAdjRot").value = 0; el("dwgRotVal").textContent = "0.0°";
+    el("dwgValues").style.display = "none";
+    el("dwgResult").textContent = "";
+    renderDwgPairs();
+  }
+  el("btnDwgClear").onclick = () => resetDwgPairs();
+  el("btnDwgUndo").onclick = () => {
+    if(dwg.pendingSrc) dwg.pendingSrc = null;
+    else if(dwg.pairs.length){ const last = dwg.pairs.pop(); dwg.pendingSrc = last.src; }
+    el("dwgStepAdjust").classList.toggle("disabled", dwg.pairs.length < 2);
+    renderDwgPairs();
+  };
+
+  function renderDwgPairs(){
+    const wrap = el("dwgPills");
+    wrap.innerHTML = "";
+    for(let i = 0; i < 2; i++){
+      const done = i < dwg.pairs.length, half = i === dwg.pairs.length && dwg.pendingSrc;
+      const pill = document.createElement("span");
+      pill.className = "pill" + (done ? " on" : "");
+      pill.textContent = `Par ${i+1}${done ? " ✓" : half ? " (DWG ✓)" : ""}`;
+      wrap.appendChild(pill);
+    }
+    const h = el("dwgPairHint");
+    if(dwg.pairs.length >= 2) h.textContent = "Båda paren klara — DWG:n är inriktad. Finjustera i Steg 3.";
+    else if(dwg.pendingSrc) h.innerHTML = `Klicka nu <b>samma punkt i modellen</b> (par ${dwg.pairs.length+1}).`;
+    else h.innerHTML = `Klicka en punkt <b>på DWG:n</b> i 3D-vyn (par ${dwg.pairs.length+1}).`;
+  }
+
+  function onDwgPick(point){
+    const p = { x: point.xMM/1000, y: point.yMM/1000, z: point.zMM/1000, modelId: point.modelId };
+    if(!dwg.pendingSrc){
+      dwg.pendingSrc = p;
+      if(p.modelId && p.modelId !== dwg.modelId){
+        const other = dwg.models.find(m => m.id === p.modelId);
+        el("dwgPairHint").innerHTML = `⚠ Punkten hamnade på <b>${(other && other.name || "en annan modell").replace(/</g,"&lt;")}</b>, inte på den valda DWG:n. `
+          + `Ångra och klicka direkt på en linje i DWG:n (dölj gärna andra modeller tillfälligt). Klicka annars samma punkt i modellen.`;
+        renderDwgPairsPillsOnly();
+        return;
+      }
+    } else {
+      dwg.pairs.push({ src: dwg.pendingSrc, dst: p });
+      dwg.pendingSrc = null;
+      if(dwg.pairs.length >= 2){
+        el("dwgStepAdjust").classList.remove("disabled");
+        applyDwgAlignment();
+      }
+    }
+    renderDwgPairs();
+  }
+  function renderDwgPairsPillsOnly(){
+    const hint = el("dwgPairHint").innerHTML;
+    renderDwgPairs();
+    el("dwgPairHint").innerHTML = hint;
+  }
+
+  /* Likformighetstransform i XY ur två punktpar (+ valfri skala/höjd), med
+     Steg 3-justeringarna (vridning kring målpunkt 1 + förskjutning) ovanpå.
+     Returnerar F(p) = s·R·p + t som { cos, sin, s, t }. */
+  function computeDwgTransform(){
+    const [p1, p2] = dwg.pairs;
+    const a1 = p1.src, a2 = p2.src, b1 = p1.dst, b2 = p2.dst;
+    const va = { x: a2.x-a1.x, y: a2.y-a1.y }, vb = { x: b2.x-b1.x, y: b2.y-b1.y };
+    const la = Math.hypot(va.x, va.y), lb = Math.hypot(vb.x, vb.y);
+    if(la < 1e-6) throw new Error("De två DWG-punkterna ligger på samma ställe — välj punkter långt ifrån varandra.");
+    const theta = Math.atan2(vb.y, vb.x) - Math.atan2(va.y, va.x);
+    const s = el("dwgAllowScale").checked ? lb/la : 1;
+    const c = Math.cos(theta), sn = Math.sin(theta);
+    const R = (p) => ({ x: c*p.x - sn*p.y, y: sn*p.x + c*p.y });
+    // mittpunkterna ska sammanfalla (fördelar ev. avvikelse jämnt på båda paren)
+    const am = { x:(a1.x+a2.x)/2, y:(a1.y+a2.y)/2, z:(a1.z+a2.z)/2 };
+    const bm = { x:(b1.x+b2.x)/2, y:(b1.y+b2.y)/2, z:(b1.z+b2.z)/2 };
+    const Ram = R(am);
+    let t = { x: bm.x - s*Ram.x, y: bm.y - s*Ram.y, z: el("dwgMatchZ").checked ? bm.z - s*am.z : am.z - s*am.z };
+
+    // Justeringar: vridning Δ kring b1, sedan förskjutning.
+    const dRad = (parseFloat(el("dwgAdjRot").value)||0) * Math.PI/180;
+    const dc = Math.cos(dRad), ds = Math.sin(dRad);
+    const off = { x: parseFloat(el("dwgAdjX").value)||0, y: parseFloat(el("dwgAdjY").value)||0, z: parseFloat(el("dwgAdjZ").value)||0 };
+    const tr = { x: t.x - b1.x, y: t.y - b1.y };
+    t = { x: dc*tr.x - ds*tr.y + b1.x + off.x, y: ds*tr.x + dc*tr.y + b1.y + off.y, z: t.z + off.z };
+    const cosT = Math.cos(theta + dRad), sinT = Math.sin(theta + dRad);
+
+    const F = (p) => ({ x: s*(cosT*p.x - sinT*p.y) + t.x, y: s*(sinT*p.x + cosT*p.y) + t.y, z: s*p.z + t.z });
+    const err = [ [a1,b1], [a2,b2] ].map(([a,b]) => { const f = F(a); return Math.hypot(f.x-b.x, f.y-b.y); });
+    return { cos: cosT, sin: sinT, s, t, F, err, distA: la, distB: lb, thetaDeg: (theta + dRad) * 180/Math.PI };
+  }
+
+  function transformPlacement(base, T){
+    const rot = v => ({ x: T.cos*v.x - T.sin*v.y, y: T.sin*v.x + T.cos*v.y, z: v.z });
+    const P0 = { x: base.position.x/1000, y: base.position.y/1000, z: base.position.z/1000 };
+    const P1 = T.F(P0);
+    return {
+      position: { x: P1.x*1000, y: P1.y*1000, z: P1.z*1000 },
+      axis: rot(base.axis),
+      refDirection: rot(base.refDirection),
+      scale: base.scale * T.s
+    };
+  }
+
+  async function applyPlacement(modelId, placement){
+    log("placeModel", modelId, placement);
+    await API.viewer.placeModel(modelId, placement);
+    dwg.applied[modelId] = placement;
+    savePlacement(modelId, placement);
+  }
+
+  let dwgTimer = null;
+  async function applyDwgAlignment(){
+    if(dwg.pairs.length < 2 || !dwg.base) return;
+    let T;
+    try { T = computeDwgTransform(); }
+    catch(err){ el("dwgResult").textContent = err.message; return; }
+    const placement = transformPlacement(dwg.base, T);
+    try {
+      await applyPlacement(dwg.modelId, placement);
+    } catch(err){
+      log("placeModel misslyckades:", err && (err.message||err));
+      el("dwgResult").textContent = "viewer.placeModel gav ett fel: " + (err && (err.message || JSON.stringify(err))) + " — se 🐞 Rådata.";
+      return;
+    }
+    dwg.result = { T, placement };
+    const scaleNote = el("dwgAllowScale").checked
+      ? `Skala ${T.s.toFixed(4)}×.`
+      : (Math.abs(T.distB/T.distA - 1) > 0.01
+          ? `⚠ Avståndet mellan punkterna skiljer ${((T.distB/T.distA - 1)*100).toFixed(1)} % mellan DWG och modell — kryssa i "Tillåt skalning" om DWG:n har fel skala/enhet.`
+          : "");
+    el("dwgResult").textContent = `✓ Inriktad. Vridning ${T.thetaDeg.toFixed(2)}°. Kvarvarande avvikelse: par 1 ${fmtDist(T.err[0])}, par 2 ${fmtDist(T.err[1])}. ${scaleNote}`;
+    const rotZ = Math.atan2(placement.refDirection.y, placement.refDirection.x) * 180/Math.PI;
+    el("dwgValues").style.display = "block";
+    el("dwgValues").textContent =
+      `Positionsinställningar (för att spara permanent i Trimble Connect):\n`
+      + `  X: ${(placement.position.x/1000).toFixed(3)} m\n`
+      + `  Y: ${(placement.position.y/1000).toFixed(3)} m\n`
+      + `  Z: ${(placement.position.z/1000).toFixed(3)} m\n`
+      + `  Rotation kring Z: ${rotZ.toFixed(3)}°\n`
+      + `  Skala: ${placement.scale.toFixed(5)}`;
+  }
+  function fmtDist(m){ return m < 1 ? `${(m*1000).toFixed(0)} mm` : `${m.toFixed(2)} m`; }
+  function scheduleDwgApply(){ clearTimeout(dwgTimer); dwgTimer = setTimeout(applyDwgAlignment, 250); }
+  ["dwgAdjX","dwgAdjY","dwgAdjZ"].forEach(id => el(id).oninput = scheduleDwgApply);
+  el("dwgAdjRot").oninput = () => { el("dwgRotVal").textContent = parseFloat(el("dwgAdjRot").value).toFixed(1) + "°"; scheduleDwgApply(); };
+  el("dwgAllowScale").onchange = scheduleDwgApply;
+  el("dwgMatchZ").onchange = scheduleDwgApply;
+
+  el("btnDwgReset").onclick = async () => {
+    if(!dwg.modelId || !dwg.original[dwg.modelId]) return;
+    try {
+      await API.viewer.placeModel(dwg.modelId, dwg.original[dwg.modelId]);
+      dwg.applied[dwg.modelId] = clonePlacement(dwg.original[dwg.modelId]);
+      try { const all = loadSavedPlacements(); delete all[dwg.modelId]; localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+      resetDwgPairs();
+      el("dwgPairHint").textContent = "Originalplaceringen är återställd. Klicka nya punktpar om du vill göra om inriktningen.";
+    } catch(err){
+      el("dwgResult").textContent = "Kunde inte återställa: " + (err && (err.message||err));
+    }
+  };
+  el("btnDwgCopy").onclick = async () => {
+    const text = el("dwgValues").textContent;
+    try { await navigator.clipboard.writeText(text); }
+    catch(e){ const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
+  };
 
   // ---------------- Trimble Connect file access (EXPERIMENTAL) ----------------
   // Everything in this section is best-effort: the exact REST endpoints for
@@ -999,6 +1624,16 @@ END-ISO-10303-21;
       const d = data.data;
       if(Array.isArray(d) && d[0] && d[0].modelId) currentModelIdGuess = d[0].modelId;
       else if(d.modelId) currentModelIdGuess = d.modelId;
+    }
+    if(event === "viewer.onPicked" && dwgWizard.classList.contains("open") && dwg.modelId && dwg.pairs.length < 2
+       && !el("dwgStepPairs").classList.contains("disabled")){
+      log("onPicked (DWG) raw:", data);
+      const point = extractPickPoint(data && data.data ? data.data : data);
+      if(point) onDwgPick(point);
+      return;
+    }
+    if(event === "viewer.onModelStateChanged" && dwgWizard.classList.contains("open")){
+      refreshDwgModels();
     }
     if(event === "viewer.onPicked" && wiz.activeTool === "3d-pick" && wiz.activePairPdfPoint){
       log("onPicked raw:", data);

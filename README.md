@@ -48,6 +48,61 @@ så det är vägen vi går istället.
    kalibreringsfilerna direkt för att testa manuellt, oavsett om
    auto-uppladdningen lyckas.
 
+## ⚡ Visa ritningen i 3D (linjer)
+
+Trimble Connect kan inte visa en PDF-bild i 3D-vyn: Workspace API har
+ingen texturkanal, och IFC-texturer verkar inte följa med i Trimbles
+konvertering. En PDF utskriven från CAD består däremot av riktiga linjer.
+**⚡ Visa linjer** i Steg 4 plockar ut dem och ritar dem direkt i 3D-vyn
+med `markup.addLineMarkups`, genom samma kalibrering som guiden (dina
+referenspunkter).
+
+- **Justering:** linjerna och guiden följer Steg 4-reglagen live när
+  "Uppdatera live" är ikryssat.
+- **Detalj:** dubbletter tas bort och raka följdsegment slås ihop. Vid
+  fler linjer än taket (Låg 5 000, Normal 15 000, Hög 40 000) visas de
+  längsta.
+- **Spara:** när du låser följer linjerna med overlayen, och korten får
+  knapparna "⚡ Linjer" och "Dölj linjer".
+- **Begränsningar:** kräver en vektor-PDF (inte skannad). Fyllningar och
+  riktig PDF-text följer inte med. Linjerna försvinner när vyn laddas om.
+- **Permanent:** **⬇ Ladda ner DXF** / **☁ Ladda upp DXF** i Steg 5 ger
+  samma linjer som DXF i världskoordinater (meter). Trimble Connect visar
+  DXF i 3D.
+
+Linjeutdragningen är skriven för pdf.js 3.11.174 (den version som laddas),
+som packar vägdata som `[OPS-koder, koordinater, minMax]`. Bara vägar som
+faktiskt ritas (stroke/fill) tas med, inte osynliga klippramar.
+
+## 📐 Vrid in DWG/modell
+
+Flyttar och vrider en inläst modell (DWG, DXF eller IFC) direkt i vyn med
+`viewer.placeModel`.
+
+1. Öppna DWG:n i 3D-vyn och klicka **📐 Vrid in DWG/modell**. Välj
+   modellen (ritningar listas först).
+2. Klicka två punktpar: först en punkt **på DWG:n**, till exempel ett
+   axelkryss, sedan **samma punkt i modellen**. Välj punkter långt ifrån
+   varandra.
+3. Appen räknar ut vridning och förflyttning, så att punkternas mittpunkt
+   sammanfaller, och flyttar DWG:n direkt. Den visar också kvarvarande
+   avvikelse per par.
+   - **Tillåt skalning:** för DWG:er i fel enhet, till exempel mm i stället
+     för m. Appen varnar när avstånden mellan punkterna inte stämmer.
+   - **Flytta till modellens höjd:** lyfter DWG:n till målpunkternas höjd.
+4. Finjustera med extra X/Y/Z och vridning kring punkt 1. Ändringarna
+   läggs på direkt.
+
+Placeringen sparas i webbläsaren ("Använd sparad placering" nästa gång).
+För att spara permanent för alla i projektet: för över de visade värdena
+(position, rotation kring Z, skala) till Trimble Connects
+**Positionsinställningar**. **↺ Återställ originalplacering** ångrar.
+
+Antagande att verifiera i Trimble: `ModelPlacement` tolkas som
+*värld = position + skala · R · lokal*, med `position` i mm och R från
+`refDirection`/`axis`. Hamnar DWG:n fel trots att avvikelsen visas som
+0 mm, skicka 🐞 Rådata-loggen (loggar `placeModel` och modellistan).
+
 ## Installation
 
 Samma mönster som de andra tilläggen:

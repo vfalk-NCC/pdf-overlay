@@ -129,38 +129,61 @@ Antagande att verifiera i Trimble: `ModelPlacement` tolkas som
 
 ## 🏷️ Ritningsregister
 
-Trimble Connect saknar ett fält för egna namn eller kommentarer på
-ritningar. **🏷️ Ritningsregister** listar projektets modeller (DWG/DXF
-som standard) med ett fritextfält efter ritningsnumret, till exempel
-"Sektion A-A vägg 3, gäller DP2".
+Listar projektets DWG/DXF, även i mappar som inte öppnats. Tillägget går
+igenom projektets filträd via Trimbles Core API.
 
-- **Revideringar:** texten kopplas till filen i Trimble Connect, inte till
-  en version, och ligger kvar när ritningen revideras. Filen i sig ändras
-  inte.
-- **Var namnet syns:** i "📐 Vrid in DWG/modell" som
-  "5082648 – Sektion A-A vägg 3". Med **Visa namnen i 3D** visas det som
-  en skarp textetikett över varje inläst ritning.
-- **Sök och visa:** sök på nummer eller text. "Visa i 3D" läser in
-  ritningen, och "Zooma" flyttar kameran till en inläst ritning.
-- **Delning:** namnen sparas i `projects/<projekt-id>/drawing_labels.json`
-  i det privata repot `vfalk-NCC/4D-data`, via `github-storage.js`
-  (samma som 4D-planering). Alla i projektet ser dem. Tokenen från
-  4D-planering eller anteckningsappen används automatiskt eftersom
-  tilläggen ligger på samma adress. Utan token sparas namnen bara i
-  webbläsaren.
-- **Fixade ritningar syns alltid:** ritningar du har namngett eller passat
-  in listas överst, även när Trimble inte listar dem. Trimble ser bara
-  filer i mappar som öppnats i Modeller-panelen. Märkningen visar
-  🏷️ (text), 📐 inpassad och "ej i Trimbles lista". **Bara mina fixade**
-  filtrerar fram dem.
-- **👁 Endast aktiva:** visar bara ritningar som är inlästa (tända) i
-  3D-vyn just nu, med antal. Klicka igen för att visa alla. Valet sparas.
-- **Inläsning:** "Visa i 3D" läser in ritningen och lägger på den sparade
-  inpassningen direkt. Hittar Trimble inte filen, öppna dess mapp i
-  Modeller-panelen. "✕" glömmer en sparad inpassning.
-- **Lagring:** inpassningarna sparas i webbläsaren, namnen delat.
+### Bara senaste revisionen
+Revisioner laddas ofta upp som **nya filer i nya PM-mappar**. Registret
+grupperar därför filerna på **ritningsnummer** och visar en rad per
+ritning med den **senaste** filen, efter uppladdningsdatum och därefter
+PM-nummer.
+- **Ritningsnummer:** filnamnet utan ändelse. En tydlig revisionsändelse
+  efter ett nummer tas bort, till exempel `_B`, `-C1` eller `rev C`
+  (`5082648_C.dwg` → `5082648`). "Sektion A" och "Sektion B" slås inte
+  ihop.
+- **"▸ N äldre"** fäller ut äldre revisioner med mapp och datum. De kan
+  visas eller släckas där.
+- **Visa senaste:** tänder den senaste och släcker äldre som är tända. En
+  varning visas om en äldre revision är tänd.
+- **Namnet** (fritext efter ritningsnumret) sparas på ritningsnumret och
+  följer med till nya revisioner.
+- **Inpassningen ärvs:** läses en ny revision in utan egen inpassning
+  används den senaste från en tidigare revision av samma ritning.
+- Kryssa ur **Bara senaste revisionen** för att se varje fil för sig.
 
-`github-storage.js` är en identisk kopia av filen i 4D-planering.
+### ⧉ Kopior för detaljer
+När flera detaljer eller sektioner på samma DWG ska passas in på olika
+ställen:
+1. **Skapa:** **⧉ Kopia** på ritningens rad frågar efter ett namn, till
+   exempel "Detalj 5 pelare K16", och skapar
+   `5082648 (Detalj 5 pelare K16).dwg` i samma mapp som den senaste
+   revisionen. Det är samma DWG-innehåll, inget konverteras. Kopian
+   startar på originalets inpassning.
+2. **Passa in:** passa in kopian som vanligt med 📐 Vrid in DWG/modell.
+   Kopiorna listas under sin ritning.
+3. **Uppdatera:** när en nyare revision av ritningen finns, i samma fil
+   eller i en ny PM-mapp, märks kopian **⚠ gammal revision** och en
+   banderoll erbjuder **Uppdatera alla**. Senaste DWG:n laddas upp med
+   kopians namn i kopians mapp. I Trimble Connect blir det en ny
+   **version** av kopian, och inpassningen och namnet ligger kvar.
+   Skapar Trimble mot förmodan en ny fil flyttas inpassning och namn dit,
+   och den gamla kopian kan tas bort.
+
+Uppdateringen sker när någon öppnar tillägget och klickar, inte i
+bakgrunden.
+
+### Övrigt
+- **👁 Endast aktiva:** bara ritningar som är inlästa (tända) just nu.
+- **Bara mina fixade:** ritningar med namn eller inpassning.
+- **Visa namnen i 3D:** textetikett över varje inläst ritning.
+- **Lagring:** delat i `vfalk-NCC/4D-data` via `github-storage.js`
+  (samma token som 4D-planering):
+  - `drawing_labels.json`: namn (`model_id` = fil-id eller
+    `dk:<ritningsnummer>`)
+  - `dwg_placements.json`: inpassningar
+  - `dwg_copies.json`: kopior
+
+  Utan token sparas allt bara i webbläsaren.
 
 ## Installation
 

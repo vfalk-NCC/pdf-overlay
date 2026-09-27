@@ -87,6 +87,13 @@
   .reg-row input[type=text]{margin-top:4px;}
   .reg-row .reg-meta{font-size:10.5px;color:var(--text-muted);margin-top:2px;min-height:12px;}
   .reg-row button{padding:2px 7px;font-size:11px;}
+  .reg-sub{font-size:11px;color:var(--text-muted);margin-top:3px;}
+  .reg-sub a{color:var(--accent);cursor:pointer;text-decoration:none;}
+  .reg-older, .reg-copies{margin:4px 0 0 10px;border-left:2px solid var(--border);padding-left:8px;}
+  .reg-older div, .reg-copies div{display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0;}
+  .reg-older span, .reg-copies span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .reg-warn{color:#b45309;font-size:11px;margin-top:3px;}
+  .stale{color:#b45309;font-weight:600;}
   .kv{font-family:Consolas,monospace;font-size:11px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;}
   #debugLog{font-size:10.5px;color:var(--text-muted);padding:6px 12px;border-top:1px solid var(--border);max-height:90px;overflow-y:auto;white-space:pre-wrap;display:none;}
   #debugLog.open{display:block;}
@@ -353,9 +360,12 @@
       <div class="inline" style="margin-bottom:6px;">
         <label><input type="checkbox" id="regOnlyDrawings" checked> Bara DWG/DXF</label>
         <label><input type="checkbox" id="regOnlyFixed"> Bara mina fixade</label>
+        <label title="Samma ritningsnummer i flera filer/PM-mappar visas som en rad med den senaste filen"><input type="checkbox" id="regLatestOnly" checked> Bara senaste revisionen</label>
         <label><input type="checkbox" id="regLabels3d"> Visa namnen i 3D (inlästa ritningar)</label>
       </div>
       <div class="hint" id="regStorage" style="margin-bottom:6px;"></div>
+      <div class="hint" id="regScan" style="margin-bottom:6px;"></div>
+      <div class="box" id="regCopyBanner" style="display:none;"></div>
       <div id="regList"></div>
     </div>
   </div>
@@ -1443,13 +1453,31 @@ END-ISO-10303-21;
     const loadedIds = new Set((loaded||[]).map(m => m.id));
     [...autoApplied].forEach(id => { if(!loadedIds.has(id)) autoApplied.delete(id); });   // släckt -> läggs på igen nästa gång
     const saved = loadSavedPlacements();
+    const copyIds = new Set((dwgCopies || []).map(c => c.copy_id));
     for(const m of loaded || []){
-      if(autoApplied.has(m.id) || !saved[m.id]) continue;
+      if(autoApplied.has(m.id)) continue;
+      let pl = saved[m.id], inherited = null;
+      // Ny revision (ny fil med samma ritningsnummer, t.ex. i en ny PM-mapp)
+      // utan egen inpassning: ärv den senast sparade från en tidigare revision.
+      if(!pl && !copyIds.has(m.id) && m.name){
+        const key = drawingKey(m.name);
+        const prev = Object.entries(saved)
+          .filter(([id, p]) => id !== m.id && !copyIds.has(id) && p && p._name && drawingKey(p._name) === key)
+          .sort((a,b) => String(b[1]._saved_at||"").localeCompare(String(a[1]._saved_at||"")))[0];
+        if(prev){ pl = prev[1]; inherited = prev[1]._name; }
+      }
+      if(!pl) continue;
       autoApplied.add(m.id);
       try {
-        await API.viewer.placeModel(m.id, clonePlacement(saved[m.id]));
-        dwg.applied[m.id] = clonePlacement(saved[m.id]);
-        log("Lade på sparad inpassning:", m.name || m.id);
+        await API.viewer.placeModel(m.id, clonePlacement(pl));
+        dwg.applied[m.id] = clonePlacement(pl);
+        if(inherited){
+          const { _name, _saved_at, ...rest } = pl;
+          dwg.models = dwg.models && dwg.models.length ? dwg.models : [m];
+          if(!dwg.models.some(x => x.id === m.id)) dwg.models.push(m);
+          savePlacement(m.id, rest);
+          log("Ärvde inpassning från tidigare revision:", inherited, "->", m.name);
+        } else log("Lade på sparad inpassning:", m.name || m.id);
       } catch(err){ log("Kunde inte lägga på inpassning för", m.name || m.id, ":", err.message||err); }
     }
   }
@@ -1809,22 +1837,34 @@ END-ISO-10303-21;
   };
 
   // ---------------- 🏷️ Ritningsregister ----------------
-  // Egna namn/kommentarer på ritningar (och andra modeller). Trimble Connect
-  // saknar ett sådant fält. Texten kopplas till modellens id i 3D-vyn, som är
-  // filens id i Trimble Connect - samma id behålls när en ny version
-  // (revidering) laddas upp, så texten följer med.
+  // Egna namn på ritningar, "bara senaste revisionen" och kopior för detaljer.
   //
-  // Lagring: projects/<projekt-id>/drawing_labels.json i det privata repot
-  // vfalk-NCC/4D-data (samma datalager som 4D-planering och anteckningsappen,
-  // via github-storage.js). Tillägget ligger på samma adress
-  // (vfalk-ncc.github.io), så token som angetts i 4D-planering eller
-  // anteckningsappen återanvänds. Utan token sparas texten bara i webbläsaren.
+  // Ritningsnummer: revisioner laddas ofta upp som NYA filer i nya PM-mappar
+  // (inte som ny version av samma fil). Registret grupperar därför filerna på
+  // ritningsnummer (filnamnet, där en tydlig revisionsändelse som "_B",
+  // "-C1" eller "rev C" efter ett nummer tas bort) och visar den senaste
+  // (uppladdningsdatum). Namn kopplas till ritningsnumret ("dk:<nr>") så att
+  // det följer med till nya revisioner; inpassningen ärvs automatiskt.
+  //
+  // Kopior: en DWG kan kopieras (samma bytes, ny fil "<nr> (<detalj>).dwg" i
+  // samma mapp) för att passas in på flera ställen. Kopian minns vilken fil/
+  // version den gjordes från; finns en nyare revision kan den uppdateras -
+  // den nya DWG:n laddas upp med samma namn i samma mapp, vilket i Trimble
+  // Connect blir en ny VERSION av kopian (inpassningen följer fil-id:t).
+  //
+  // Lagring (delat via 4D-data, annars bara i webbläsaren):
+  //   projects/<id>/drawing_labels.json  namn (model_id = fil-id eller "dk:<nr>")
+  //   projects/<id>/dwg_copies.json      kopior
 
   const REG_LOCAL_KEY = "pdfoverlay-drawing-labels";
-  let drawingLabels = {};          // modelId -> { model_id, file_name, label, updated_at, updated_by }
+  const COPIES_LOCAL_KEY = "pdfoverlay-dwg-copies";
+  let drawingLabels = {};          // fil-id eller "dk:<nr>" -> { model_id, file_name, label, updated_at, updated_by }
+  let dwgCopies = [];              // [{ copy_id, copy_name, folder_id, source_key, source_file_id, source_version_id, detail, ... }]
   let regProjectId = null;
-  let regModels = [];
+  let regModels = [];              // alla kända modeller/filer (Trimble-listan + filträdet + ihågkomna)
+  let regFileScanDone = false;
   const regLabelMarkups = [];
+  const regExpanded = new Set();
 
   function regToken(){
     for(const key of ["tcnotes-settings", "4dplan-settings"]){
@@ -1839,64 +1879,99 @@ END-ISO-10303-21;
     return null;
   }
   const regPath = () => `projects/${encodeURIComponent(regProjectId)}/drawing_labels.json`;
+  const copiesPath = () => `projects/${encodeURIComponent(regProjectId)}/dwg_copies.json`;
+
+  // ---- Ritningsnummer ----
+  const stripExt = n => String(n || "").replace(/\.(dwg|dxf|ifc|pdf)$/i, "").trim();
+  /* Ritningsnummer för visning: filnamn utan ändelse och utan tydlig revisionsändelse. */
+  function drawingBase(name){
+    let b = stripExt(name).replace(/\s+/g, " ");
+    const explicit = b.match(/^(.*?\d)[\s_.\-]*rev(?:ision)?\.?\s*[A-Za-z0-9]{1,3}$/i);
+    if(explicit) return explicit[1].trim();
+    const suffix = b.match(/^(.*\d)[_\-]([A-Z]\d?)$/);         // "5082648_B", "5082648-C1"
+    if(suffix) return suffix[1].trim();
+    return b;
+  }
+  const drawingKey = name => drawingBase(name).toLowerCase();
+
+  function fileDate(m){
+    const d = m.modifiedOn || m.modifiedTime || m.lastModified || m.createdOn || m.createdTime || m.uploadedOn;
+    const t = d ? Date.parse(d) : NaN;
+    return isFinite(t) ? t : 0;
+  }
+  const pmNumber = path => { const x = String(path || "").match(/PM\s*[-_]?\s*(\d+)/gi); return x ? parseInt(x[x.length-1].replace(/\D/g, ""), 10) : 0; };
+  const newestFirst = (a, b) => (fileDate(b) - fileDate(a)) || (pmNumber(b.path) - pmNumber(a.path)) || String(b.name).localeCompare(String(a.name), "sv", { numeric:true });
+  const fmtDate = t => t ? new Date(t).toLocaleDateString("sv-SE") : "";
+
+  // ---- Namn ----
+  function labelRec(m){
+    return drawingLabels[m.id] || drawingLabels["dk:" + drawingKey(m.name)] || null;
+  }
+  /* "5082648 – Sektion A-A vägg 3": ritningsnummer + egen text. */
+  function displayName(m){
+    const lab = labelRec(m);
+    return lab && lab.label ? `${stripExt(m.name || m.id)} – ${lab.label}` : (m.name || m.id);
+  }
 
   async function loadDrawingLabels(){
     if(!regProjectId) regProjectId = await getProjectId();
     const token = regToken();
-    let rows = [];
+    let rows = [], copies = [];
     if(token && regProjectId){
       try {
-        rows = await ghReadJSON(token, regPath());
-        el("regStorage").textContent = "Delas med alla i projektet (4D-data).";
+        [rows, copies] = await Promise.all([ghReadJSON(token, regPath()), ghReadJSON(token, copiesPath())]);
+        el("regStorage").textContent = "Namn, inpassningar och kopior delas med alla i projektet (4D-data).";
       } catch(err){
         log("Kunde inte läsa ritningsregistret:", err.message||err);
-        el("regStorage").textContent = "⚠ Kunde inte läsa delade namn (" + (err.message||err) + "). Visar bara lokalt sparade.";
-        rows = regLocalRows();
+        el("regStorage").textContent = "⚠ Kunde inte läsa delade data (" + (err.message||err) + "). Visar bara lokalt sparade.";
+        rows = localRows(REG_LOCAL_KEY); copies = localRows(COPIES_LOCAL_KEY);
       }
     } else {
-      rows = regLocalRows();
-      el("regStorage").textContent = "Sparas bara i den här webbläsaren. Ange GitHub-token i 4D-planering eller anteckningsappen för att dela namnen med projektet.";
+      rows = localRows(REG_LOCAL_KEY); copies = localRows(COPIES_LOCAL_KEY);
+      el("regStorage").textContent = "Sparas bara i den här webbläsaren. Ange GitHub-token i 4D-planering eller anteckningsappen för att dela med projektet.";
     }
     drawingLabels = {};
     rows.forEach(r => { if(r && r.model_id) drawingLabels[r.model_id] = r; });
+    dwgCopies = (copies || []).filter(c => c && c.copy_id);
   }
-  function regLocalRows(){
-    try { return Object.values((JSON.parse(localStorage.getItem(REG_LOCAL_KEY) || "{}") || {})[regProjectId || "?"] || {}); } catch(e){ return []; }
+  function localRows(key){
+    try { return Object.values((JSON.parse(localStorage.getItem(key) || "{}") || {})[regProjectId || "?"] || {}); } catch(e){ return []; }
+  }
+  function writeLocal(key, id, rec){
+    try {
+      const all = JSON.parse(localStorage.getItem(key) || "{}") || {};
+      const proj = all[regProjectId || "?"] = all[regProjectId || "?"] || {};
+      if(rec) proj[id] = rec; else delete proj[id];
+      localStorage.setItem(key, JSON.stringify(all));
+    } catch(e){}
   }
 
-  async function saveDrawingLabel(model, label){
-    const rec = {
-      model_id: model.id,
-      file_name: model.name || null,
-      label: label.trim(),
-      updated_at: new Date().toISOString(),
-      updated_by: regUserName()
-    };
-    drawingLabels[model.id] = rec;
+  /* id = fil-id, eller "dk:<ritningsnummer>" för en hel ritning (alla revisioner). */
+  async function saveDrawingLabel(id, fileName, label){
+    const rec = { model_id: id, file_name: fileName || null, label: label.trim(), updated_at: new Date().toISOString(), updated_by: regUserName() };
+    if(rec.label) drawingLabels[id] = rec; else delete drawingLabels[id];
     const token = regToken();
     if(token && regProjectId){
       await ghWriteJSON(token, regPath(), arr => {
-        const rest = arr.filter(r => r.model_id !== model.id);
+        const rest = arr.filter(r => r.model_id !== id);
         return rec.label ? [...rest, rec] : rest;
-      }, `Ritningsregister: ${model.name || model.id}`);
+      }, `Ritningsregister: ${fileName || id}`);
+    } else writeLocal(REG_LOCAL_KEY, id, rec.label ? rec : null);
+  }
+
+  async function saveCopyRecord(rec, removeId){
+    dwgCopies = dwgCopies.filter(c => c.copy_id !== rec.copy_id && c.copy_id !== removeId).concat([rec]);
+    const token = regToken();
+    if(token && regProjectId){
+      await ghWriteJSON(token, copiesPath(), arr => arr.filter(c => c.copy_id !== rec.copy_id && c.copy_id !== removeId).concat([rec]),
+        `Ritningskopia: ${rec.copy_name}`);
     } else {
-      try {
-        const all = JSON.parse(localStorage.getItem(REG_LOCAL_KEY) || "{}") || {};
-        const proj = all[regProjectId || "?"] = all[regProjectId || "?"] || {};
-        if(rec.label) proj[model.id] = rec; else delete proj[model.id];
-        localStorage.setItem(REG_LOCAL_KEY, JSON.stringify(all));
-      } catch(e){}
+      if(removeId) writeLocal(COPIES_LOCAL_KEY, removeId, null);
+      writeLocal(COPIES_LOCAL_KEY, rec.copy_id, rec);
     }
-    if(!rec.label) delete drawingLabels[model.id];
   }
 
-  /* "5082648 – Sektion A-A vägg 3": ritningsnummer (filnamn utan ändelse) + egen text. */
-  function displayName(m){
-    const base = String(m.name || m.id).replace(/\.(dwg|dxf|ifc|pdf)$/i, "");
-    const lab = drawingLabels[m.id] && drawingLabels[m.id].label;
-    return lab ? `${base} – ${lab}` : (m.name || m.id);
-  }
-
+  // ---- Panelen ----
   el("btnRegister").onclick = async () => {
     wizard.classList.remove("open");
     dwgWizard.classList.remove("open");
@@ -1904,10 +1979,15 @@ END-ISO-10303-21;
     await refreshRegister();
   };
   el("btnRegClose").onclick = () => el("regPanel").classList.remove("open");
-  el("btnRegRefresh").onclick = () => refreshRegister();
+  el("btnRegRefresh").onclick = () => { fileListCache = {}; regFileScanDone = false; refreshRegister(); };
   el("regSearch").oninput = () => renderRegister();
   el("regOnlyDrawings").onchange = () => renderRegister();
   el("regOnlyFixed").onchange = () => renderRegister();
+  try { el("regLatestOnly").checked = localStorage.getItem("pdfoverlay-reg-latest") !== "0"; } catch(e){}
+  el("regLatestOnly").onchange = () => {
+    try { localStorage.setItem("pdfoverlay-reg-latest", el("regLatestOnly").checked ? "1" : "0"); } catch(e){}
+    renderRegister();
+  };
   // "Endast aktiva": bara inlästa (tända) modeller. Valet minns mellan sessioner.
   let regOnlyActive = false;
   try { regOnlyActive = localStorage.getItem("pdfoverlay-reg-only-active") === "1"; } catch(e){}
@@ -1924,126 +2004,361 @@ END-ISO-10303-21;
   };
   el("regLabels3d").onchange = () => updateRegLabels3d();
 
+  const isDrawingModel = m => /\.(dwg|dxf)$/i.test(m.name||"") || /dwg|dxf/i.test(m.type||"");
+  const isLoaded = m => String(m.state||"").toLowerCase() === "loaded";
+
   async function refreshRegister(){
     el("regList").innerHTML = '<div class="hint">Läser modeller…</div>';
-    try { regModels = await API.viewer.getModels(); } catch(e){ regModels = []; log("getModels misslyckades:", e.message||e); }
+    let viewerModels = [];
+    try { viewerModels = await API.viewer.getModels(); } catch(e){ log("getModels misslyckades:", e.message||e); }
     await loadDrawingLabels();
     await syncSharedPlacements();
-    // Ritningar som fått ett namn eller passats in ska alltid synas, även när
-    // Trimble inte listar dem (getModels ser bara mappar som öppnats i
-    // Modeller-panelen). De läggs till från registret och sparade placeringar.
-    const known = new Set(regModels.map(m => m.id));
+
+    // Alla DWG/DXF i projektet via filträdet (även PM-mappar som inte öppnats).
+    let files = [];
+    try {
+      el("regScan").textContent = "Söker ritningar i projektet… (godkänn ev. behörighetsdialog i Trimble Connect)";
+      files = await listProjectFiles(/\.(dwg|dxf)$/i, (n, folders) => { el("regScan").textContent = `Söker ritningar… ${n} DWG/DXF i ${folders} mappar`; });
+      regFileScanDone = true;
+      el("regScan").textContent = `${files.length} DWG/DXF i projektet.`;
+    } catch(err){
+      log("Kunde inte söka igenom projektets filer:", err.message||err);
+      el("regScan").textContent = "⚠ Kunde inte läsa projektets filträd (" + (err.message||err) + ") — visar bara det Trimble listar just nu.";
+    }
+
+    // Slå ihop: filträdet (mapp, datum) + Trimbles modellista (inläst-status).
+    const byId = new Map(), byVersion = new Map();
+    files.forEach(f => { const m = { ...f, state: "" }; byId.set(m.id, m); if(m.versionId) byVersion.set(m.versionId, m); });
+    viewerModels.forEach(vm => {
+      const hit = byId.get(vm.id) || (vm.versionId && byVersion.get(vm.versionId));
+      if(hit){ hit.state = vm.state; hit.viewerId = vm.id; hit.type = vm.type; }
+      else byId.set(vm.id, { ...vm, viewerId: vm.id });
+    });
+    // Ihågkomna (namngivna/inpassade) som varken filträdet eller Trimble listar.
     Object.values(drawingLabels).forEach(r => {
-      if(!known.has(r.model_id)){ regModels.push({ id: r.model_id, name: r.file_name || r.model_id, state: "", _remembered: true }); known.add(r.model_id); }
+      if(!String(r.model_id).startsWith("dk:") && !byId.has(r.model_id)) byId.set(r.model_id, { id: r.model_id, name: r.file_name || r.model_id, state: "", _remembered: true });
     });
     Object.entries(loadSavedPlacements()).forEach(([id, p]) => {
-      if(!known.has(id)){ regModels.push({ id, name: (p && p._name) || id, state: "", _remembered: true }); known.add(id); }
+      if(!byId.has(id)) byId.set(id, { id, name: (p && p._name) || id, state: "", _remembered: true });
     });
+    regModels = [...byId.values()];
     renderRegister();
     updateRegLabels3d();
   }
 
-  const isDrawingModel = m => /\.(dwg|dxf)$/i.test(m.name||"") || /dwg|dxf/i.test(m.type||"");
-  const isLoaded = m => String(m.state||"").toLowerCase() === "loaded";
+  /* Id som 3D-vyn använder för modellen (fil-id; normalt samma som i filträdet). */
+  const viewerIdOf = m => m.viewerId || m.id;
+
+  /* Grupperar på ritningsnummer. Kopior grupperas under sitt original. */
+  function buildGroups(models){
+    const copyIds = new Set(dwgCopies.map(c => c.copy_id));
+    const groups = new Map();
+    models.forEach(m => {
+      if(copyIds.has(m.id)) return;
+      const key = drawingKey(m.name || m.id);
+      if(!groups.has(key)) groups.set(key, { key, base: drawingBase(m.name || m.id), files: [], copies: [] });
+      groups.get(key).files.push(m);
+    });
+    groups.forEach(g => { g.files.sort(newestFirst); g.latest = g.files[0]; });
+    dwgCopies.forEach(c => {
+      const g = groups.get(c.source_key);
+      const file = models.find(m => m.id === c.copy_id) || { id: c.copy_id, name: c.copy_name, state: "", _remembered: true };
+      const entry = { rec: c, file, stale: isCopyStale(c, g) };
+      if(g) g.copies.push(entry);
+      else {   // originalet hittas inte (ännu) - visa kopian ändå
+        const key = c.source_key;
+        if(!groups.has(key)) groups.set(key, { key, base: c.source_key, files: [], copies: [], latest: null });
+        groups.get(key).copies.push(entry);
+      }
+    });
+    return [...groups.values()];
+  }
+
+  function isCopyStale(c, g){
+    const latest = g && g.latest;
+    if(!latest) return false;
+    if(latest.id !== c.source_file_id) return true;
+    return !!(latest.versionId && c.source_version_id && latest.versionId !== c.source_version_id);
+  }
 
   function renderRegister(){
     renderActiveButton();
     const q = el("regSearch").value.trim().toLowerCase();
     const onlyDrw = el("regOnlyDrawings").checked;
     const placements = loadSavedPlacements();
-    const isFixed = m => !!((drawingLabels[m.id] && drawingLabels[m.id].label) || placements[m.id]);
-    const rows = regModels
-      .filter(m => !onlyDrw || isDrawingModel(m))
-      .filter(m => !el("regOnlyFixed").checked || isFixed(m))
-      .filter(m => !regOnlyActive || isLoaded(m))
-      .filter(m => !q || (`${m.name||""} ${(drawingLabels[m.id]||{}).label||""}`).toLowerCase().includes(q))
-      .sort((a,b) => (isFixed(b) - isFixed(a)) || (isLoaded(b) - isLoaded(a)) || String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
+    const models = regModels.filter(m => !onlyDrw || isDrawingModel(m));
     const list = el("regList");
     list.innerHTML = "";
+
+    let groups = buildGroups(models);
+    // Utan "bara senaste": varje fil blir en egen rad (kopior ligger kvar under sitt original).
+    if(!el("regLatestOnly").checked){
+      const split = [];
+      groups.forEach(g => {
+        if(g.files.length <= 1){ split.push(g); return; }
+        g.files.forEach((f, i) => split.push({ key: g.key, base: g.base, files: [f], latest: f, copies: i === 0 ? g.copies : [] }));
+      });
+      groups = split;
+    }
+
+    const allFiles = g => g.files.concat(g.copies.map(c => c.file));
+    const isFixedGroup = g => !!(drawingLabels["dk:" + g.key] || allFiles(g).some(f => (drawingLabels[f.id] && drawingLabels[f.id].label) || placements[f.id]));
+    const matches = g => !q || `${g.base} ${(drawingLabels["dk:"+g.key]||{}).label||""} ${allFiles(g).map(f => `${f.name} ${f.path||""} ${(drawingLabels[f.id]||{}).label||""}`).join(" ")}`.toLowerCase().includes(q);
+    const rows = groups
+      .filter(g => !el("regOnlyFixed").checked || isFixedGroup(g))
+      .filter(g => !regOnlyActive || allFiles(g).some(isLoaded))
+      .filter(matches)
+      .sort((a,b) => (isFixedGroup(b) - isFixedGroup(a)) || (allFiles(b).some(isLoaded) - allFiles(a).some(isLoaded)) || a.base.localeCompare(b.base, "sv", { numeric:true }));
+
+    renderCopyBanner(buildGroups(models));
     if(!rows.length){
-      list.innerHTML = `<div class="hint">${regModels.length ? (regOnlyActive ? "Inga aktiva (inlästa) ritningar just nu – tänd en ritning i Modeller-panelen, eller klicka 👁 Endast aktiva för att visa alla." : "Inget matchar.") : "Hittade inga modeller. Trimble listar bara filer i mappar som öppnats i Modeller-panelen – öppna mappen och klicka ↻."}</div>`;
+      list.innerHTML = `<div class="hint">${regModels.length ? (regOnlyActive ? "Inga aktiva (inlästa) ritningar just nu – tänd en ritning, eller klicka 👁 Endast aktiva för att visa alla." : "Inget matchar.") : "Hittade inga ritningar."}</div>`;
       return;
     }
-    rows.forEach(m => {
-      const rec = drawingLabels[m.id];
-      const row = document.createElement("div");
-      row.className = "reg-row";
-      const head = document.createElement("div");
-      head.className = "reg-head";
-      const name = document.createElement("span");
-      name.className = "reg-name";
-      name.textContent = (isDrawingModel(m) ? "📐 " : "🧊 ") + (m.name || m.id);
-      name.title = m.name || m.id;
-      const state = document.createElement("span");
-      state.className = "reg-state";
-      state.textContent = [
-        placements[m.id] ? "📐 inpassad" : "",
-        isLoaded(m) ? "● inläst" : m._remembered ? "ej i Trimbles lista" : ""
-      ].filter(Boolean).join(" · ");
-      if(m._remembered) state.title = "Trimble listar bara filer i mappar som öppnats i Modeller-panelen. Ritningen visas här ändå eftersom du har namngett eller passat in den.";
-      const show = document.createElement("button");
-      show.className = "ghost";
-      show.textContent = isLoaded(m) ? "Zooma" : "Visa i 3D";
-      show.onclick = async () => {
-        try {
-          if(!isLoaded(m)){
-            await API.viewer.toggleModel(m.id, true, true);
-            m.state = "loaded";
-            // Lägg på den sparade inpassningen direkt (placeModel gäller bara visningen).
-            if(placements[m.id]){
-              try { await API.viewer.placeModel(m.id, clonePlacement(placements[m.id])); dwg.applied[m.id] = clonePlacement(placements[m.id]); }
-              catch(e){ log("Kunde inte lägga på sparad placering:", e.message||e); }
-            }
-            renderRegister(); updateRegLabels3d();
-          }
-          else await API.viewer.setCamera({ modelObjectIds: [{ modelId: m.id }] }, { animationTime: 600 });
-        } catch(err){
-          log("Kunde inte visa modellen:", err.message||err);
-          meta.textContent = m._remembered
-            ? "⚠ Trimble hittar inte ritningen just nu — öppna dess mapp i Modeller-panelen och klicka ↻."
-            : "⚠ Kunde inte läsa in ritningen: " + (err.message||err);
+    rows.forEach(g => list.appendChild(renderGroupRow(g, placements)));
+  }
+
+  function mkBtn(text, title, onclick){
+    const b = document.createElement("button");
+    b.className = "ghost"; b.textContent = text; if(title) b.title = title; b.onclick = onclick;
+    return b;
+  }
+
+  function renderGroupRow(g, placements){
+    const latest = g.latest;
+    const row = document.createElement("div");
+    row.className = "reg-row";
+    const head = document.createElement("div");
+    head.className = "reg-head";
+    const name = document.createElement("span");
+    name.className = "reg-name";
+    const grouped = g.files.length > 1 && el("regLatestOnly").checked;
+    const title = latest ? (grouped ? g.base : (latest.name || latest.id)) : g.base;
+    name.textContent = (latest && !isDrawingModel(latest) ? "🧊 " : "📐 ") + title;
+    name.title = latest ? `${latest.name}${latest.path ? " · " + latest.path : ""}` : g.base;
+    const state = document.createElement("span");
+    state.className = "reg-state";
+    const meta = document.createElement("div");
+    meta.className = "reg-meta";
+    head.append(name, state);
+
+    if(latest){
+      state.textContent = [placements[latest.id] ? "📐 inpassad" : "", isLoaded(latest) ? "● inläst" : latest._remembered ? "ej i Trimbles lista" : ""].filter(Boolean).join(" · ");
+      head.appendChild(mkBtn(isLoaded(latest) ? "Zooma" : (grouped ? "Visa senaste" : "Visa i 3D"), grouped ? "Tänder den senaste revisionen och släcker äldre" : "", () => showLatest(g, meta)));
+      if(isDrawingModel(latest)) head.appendChild(mkBtn("⧉ Kopia", "Kopiera DWG:n för att passa in en detalj på ett annat ställe", () => createCopy(g, meta)));
+      if(placements[latest.id]) head.appendChild(mkBtn("✕", "Glöm den sparade inpassningen (ritningen i Trimble påverkas inte)", () => {
+        if(!confirm(`Glömma den sparade inpassningen för ${latest.name}?`)) return;
+        forgetPlacement(latest.id); renderRegister();
+      }));
+    }
+
+    // Senaste fil + äldre revisioner
+    const sub = document.createElement("div");
+    sub.className = "reg-sub";
+    const older = el("regLatestOnly").checked ? g.files.slice(1) : [];
+    if(latest && (grouped || latest.path)){
+      sub.textContent = `${grouped ? "Senaste: " + latest.name + " · " : ""}${latest.path || ""}${fileDate(latest) ? " · " + fmtDate(fileDate(latest)) : ""}`;
+    }
+    if(older.length){
+      const a = document.createElement("a");
+      const open = regExpanded.has(g.key);
+      a.textContent = ` ${open ? "▾" : "▸"} ${older.length} äldre`;
+      a.onclick = () => { open ? regExpanded.delete(g.key) : regExpanded.add(g.key); renderRegister(); };
+      sub.appendChild(a);
+    }
+    const warnOld = older.filter(isLoaded);
+    const warn = document.createElement("div");
+    if(warnOld.length){
+      warn.className = "reg-warn";
+      warn.textContent = `⚠ Äldre revision är tänd (${warnOld.map(f => f.path || f.name).join(", ")}). `;
+      const sw = document.createElement("a");
+      sw.textContent = "Byt till senaste";
+      sw.style.cssText = "cursor:pointer;color:var(--accent);";
+      sw.onclick = () => showLatest(g, meta);
+      warn.appendChild(sw);
+    }
+
+    // Namn för hela ritningen (följer med nya revisioner)
+    const labelId = grouped || g.files.length > 1 ? "dk:" + g.key : (latest ? latest.id : "dk:" + g.key);
+    const rec = drawingLabels[labelId] || (latest && labelRec(latest));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Fritext efter ritningsnumret…";
+    input.value = rec ? rec.label : "";
+    meta.textContent = rec ? `${rec.updated_by ? rec.updated_by + " · " : ""}${new Date(rec.updated_at).toLocaleString("sv-SE", { dateStyle:"short", timeStyle:"short" })}` : "";
+    input.onkeydown = e => { if(e.key === "Enter") input.blur(); };
+    input.onblur = async () => {
+      const val = input.value.trim();
+      if(val === ((rec && rec.label) || "")) return;
+      meta.textContent = "Sparar…";
+      try {
+        await saveDrawingLabel(labelId, labelId.startsWith("dk:") ? g.base : latest && latest.name, val);
+        meta.textContent = val ? "✓ Sparad" : "✓ Borttagen";
+        updateRegLabels3d();
+        if(dwgWizard.classList.contains("open")) refreshDwgModels();
+      } catch(err){ meta.textContent = "⚠ Kunde inte spara: " + (err.message||err); }
+    };
+
+    row.append(head, sub);
+    if(warnOld.length) row.appendChild(warn);
+    row.append(input, meta);
+
+    if(older.length && regExpanded.has(g.key)){
+      const box = document.createElement("div");
+      box.className = "reg-older";
+      older.forEach(f => {
+        const line = document.createElement("div");
+        const t = document.createElement("span");
+        t.textContent = `${f.name} · ${f.path || ""}${fileDate(f) ? " · " + fmtDate(fileDate(f)) : ""}${isLoaded(f) ? " · ● inläst" : ""}`;
+        line.appendChild(t);
+        line.appendChild(isLoaded(f)
+          ? mkBtn("Släck", "", async () => { await toggleModelSafe(f, false); renderRegister(); })
+          : mkBtn("Visa", "Visa den här äldre revisionen", async () => { await toggleModelSafe(f, true); renderRegister(); }));
+        box.appendChild(line);
+      });
+      row.appendChild(box);
+    }
+
+    if(g.copies.length){
+      const box = document.createElement("div");
+      box.className = "reg-copies";
+      g.copies.forEach(({ rec: c, file, stale }) => {
+        const line = document.createElement("div");
+        const t = document.createElement("span");
+        t.innerHTML = "";
+        t.textContent = `⧉ ${c.detail || c.copy_name} · ${placements[c.copy_id] ? "📐 inpassad" : "ej inpassad"}${isLoaded(file) ? " · ● inläst" : ""}`;
+        t.title = c.copy_name;
+        if(stale){ const st = document.createElement("b"); st.className = "stale"; st.textContent = " · ⚠ gammal revision"; t.appendChild(st); }
+        line.appendChild(t);
+        if(stale) line.appendChild(mkBtn("Uppdatera", "Ladda upp senaste revisionen som ny version av kopian", () => updateCopies([{ rec: c, file }], meta)));
+        line.appendChild(isLoaded(file)
+          ? mkBtn("Zooma", "", () => API.viewer.setCamera({ modelObjectIds: [{ modelId: viewerIdOf(file) }] }, { animationTime: 600 }).catch(()=>{}))
+          : mkBtn("Visa i 3D", "", async () => { await toggleModelSafe(file, true, meta); renderRegister(); }));
+        box.appendChild(line);
+      });
+      row.appendChild(box);
+    }
+    return row;
+  }
+
+  async function toggleModelSafe(m, on, meta){
+    try {
+      await API.viewer.toggleModel(viewerIdOf(m), on, on);
+      m.state = on ? "loaded" : "unloaded";
+      if(on) await autoApplyPlacements();
+      return true;
+    } catch(err){
+      log("toggleModel misslyckades:", m.name, err.message||err);
+      if(meta) meta.textContent = "⚠ Trimble kunde inte " + (on ? "läsa in" : "släcka") + " ritningen: " + (err.message||err);
+      return false;
+    }
+  }
+
+  /* Tänder senaste revisionen (eller zoomar) och släcker äldre revisioner. */
+  async function showLatest(g, meta){
+    const latest = g.latest;
+    if(!latest) return;
+    if(isLoaded(latest) && !g.files.slice(1).some(isLoaded)){
+      API.viewer.setCamera({ modelObjectIds: [{ modelId: viewerIdOf(latest) }] }, { animationTime: 600 }).catch(()=>{});
+      return;
+    }
+    for(const f of g.files.slice(1).filter(isLoaded)) await toggleModelSafe(f, false, meta);
+    if(!isLoaded(latest)) await toggleModelSafe(latest, true, meta);
+    renderRegister(); updateRegLabels3d();
+  }
+
+  // ---- Kopior ----
+  const safeFileName = s => String(s).replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+
+  async function createCopy(g, meta){
+    const src = g.latest;
+    if(!src || !src.folderId){
+      alert("Kan inte kopiera: hittar inte ritningens mapp i projektets filträd. Klicka ↻ och försök igen (tillägget behöver kunna läsa projektets filer).");
+      return;
+    }
+    const detail = (prompt(`Namn på detaljen för kopian av ${g.base}\n(t.ex. "Detalj 5 pelare K16"):`) || "").trim();
+    if(!detail) return;
+    const ext = (String(src.name).match(/\.(dwg|dxf)$/i) || [".dwg"])[0].toLowerCase();
+    const copyName = safeFileName(`${g.base} (${detail})`) + ext;
+    if(regModels.some(m => m.folderId === src.folderId && String(m.name).toLowerCase() === copyName.toLowerCase())){
+      alert(`Det finns redan en fil som heter "${copyName}" i samma mapp. Välj ett annat namn på detaljen.`);
+      return;
+    }
+    try {
+      meta.textContent = `Kopierar ${src.name}…`;
+      const bytes = await downloadTcFile(src);
+      meta.textContent = `Laddar upp ${copyName}…`;
+      const res = await uploadBytesToFolder(src.folderId, copyName, bytes, "application/octet-stream");
+      await saveCopyRecord({
+        copy_id: res.fileId, copy_name: copyName, folder_id: src.folderId, detail,
+        source_key: g.key, source_file_id: src.id, source_version_id: src.versionId || null, source_name: src.name,
+        created_at: new Date().toISOString(), created_by: regUserName(), updated_at: new Date().toISOString()
+      });
+      // Starta kopian på originalets inpassning, så att man bara behöver flytta den till detaljens plats.
+      const placements = loadSavedPlacements();
+      if(placements[src.id]){ const { _name, _saved_at, ...pl } = placements[src.id]; savePlacement(res.fileId, pl); }
+      meta.textContent = `✓ Kopian "${copyName}" skapad i samma mapp. Visa den i 3D och passa in den med 📐 Vrid in DWG/modell.`;
+      fileListCache = {};
+      await refreshRegister();
+    } catch(err){
+      log("Kunde inte skapa kopia:", err.message||err);
+      meta.textContent = "⚠ Kunde inte skapa kopian: " + (err.message||err);
+    }
+  }
+
+  function renderCopyBanner(groups){
+    const stale = [];
+    groups.forEach(g => g.copies.forEach(c => { if(c.stale) stale.push(c); }));
+    const banner = el("regCopyBanner");
+    if(!stale.length){ banner.style.display = "none"; return; }
+    banner.style.display = "block";
+    banner.innerHTML = "";
+    const t = document.createElement("div");
+    t.innerHTML = `<b>⚠ ${stale.length} kopi${stale.length === 1 ? "a bygger" : "or bygger"} på en äldre revision</b> — det finns en nyare DWG för ritningen.`;
+    const btn = mkBtn("Uppdatera alla", "Laddar upp senaste revisionen som ny version av varje kopia. Inpassningen behålls.", () => updateCopies(stale, t));
+    btn.className = "primary";
+    banner.append(t, btn);
+  }
+
+  /* Laddar upp senaste revisionen som ny version av varje kopia (samma namn,
+     samma mapp). Blir det mot förmodan en NY fil i stället för ny version
+     flyttas kopians inpassning och namn över till den nya filen. */
+  async function updateCopies(entries, statusEl){
+    const groups = buildGroups(regModels);
+    const byKey = new Map(groups.map(g => [g.key, g]));
+    const bytesCache = new Map();
+    let ok = 0, newFiles = 0, failed = 0;
+    for(const { rec: c, file } of entries){
+      const g = byKey.get(c.source_key);
+      const src = g && g.latest;
+      if(!src){ failed++; continue; }
+      try {
+        statusEl.textContent = `Uppdaterar ${c.copy_name}…`;
+        if(!bytesCache.has(src.id)) bytesCache.set(src.id, await downloadTcFile(src));
+        const res = await uploadBytesToFolder(c.folder_id, c.copy_name, bytesCache.get(src.id), "application/octet-stream");
+        const oldId = c.copy_id;
+        const rec = { ...c, copy_id: res.fileId, source_file_id: src.id, source_version_id: src.versionId || null, source_name: src.name, updated_at: new Date().toISOString(), updated_by: regUserName() };
+        if(res.fileId !== oldId){
+          newFiles++;
+          log("Trimble skapade en ny fil i stället för ny version:", c.copy_name, oldId, "->", res.fileId);
+          const pl = loadSavedPlacements()[oldId];
+          if(pl){ const { _name, _saved_at, ...rest } = pl; savePlacement(res.fileId, rest); }
+          if(drawingLabels[oldId]) await saveDrawingLabel(res.fileId, c.copy_name, drawingLabels[oldId].label);
         }
-      };
-      head.append(name, state, show);
-      if(placements[m.id]){
-        const forget = document.createElement("button");
-        forget.className = "ghost";
-        forget.textContent = "✕";
-        forget.title = "Glöm den sparade inpassningen (ritningen i Trimble påverkas inte)";
-        forget.onclick = () => {
-          if(!confirm(`Glömma den sparade inpassningen för ${m.name}?`)) return;
-          forgetPlacement(m.id);
-          if(m._remembered && !(drawingLabels[m.id] && drawingLabels[m.id].label)) regModels = regModels.filter(x => x.id !== m.id);
-          renderRegister();
-        };
-        head.appendChild(forget);
+        await saveCopyRecord(rec, res.fileId !== oldId ? oldId : null);
+        // Läs om kopian i 3D så att den nya versionen visas; inpassningen läggs på igen automatiskt.
+        if(file && isLoaded(file)){ await toggleModelSafe(file, false); await toggleModelSafe({ ...file, id: res.fileId, viewerId: res.fileId }, true); }
+        ok++;
+      } catch(err){
+        failed++;
+        log("Kunde inte uppdatera kopian", c.copy_name, ":", err.message||err);
       }
-      const input = document.createElement("input");
-      input.type = "text";
-      input.placeholder = "Fritext efter ritningsnumret…";
-      input.value = rec ? rec.label : "";
-      const meta = document.createElement("div");
-      meta.className = "reg-meta";
-      meta.textContent = rec ? `${rec.updated_by ? rec.updated_by + " · " : ""}${new Date(rec.updated_at).toLocaleString("sv-SE", { dateStyle:"short", timeStyle:"short" })}` : "";
-      const commit = async () => {
-        const val = input.value.trim();
-        if(val === ((drawingLabels[m.id]||{}).label || "")) return;
-        meta.textContent = "Sparar…";
-        try {
-          await saveDrawingLabel(m, val);
-          meta.textContent = val ? "✓ Sparad" : "✓ Borttagen";
-          updateRegLabels3d();
-          if(dwgWizard.classList.contains("open")) refreshDwgModels();
-        } catch(err){
-          log("Kunde inte spara namnet:", err.message||err);
-          meta.textContent = "⚠ Kunde inte spara: " + (err.message||err);
-        }
-      };
-      input.onkeydown = e => { if(e.key === "Enter") input.blur(); };
-      input.onblur = commit;
-      row.append(head, input, meta);
-      list.appendChild(row);
-    });
+    }
+    statusEl.textContent = `✓ ${ok} kopi${ok === 1 ? "a" : "or"} uppdaterad${ok === 1 ? "" : "e"}`
+      + (failed ? `, ⚠ ${failed} misslyckades (se 🐞 Rådata)` : "")
+      + (newFiles ? `. Obs: Trimble skapade ${newFiles} ny${newFiles === 1 ? " fil" : "a filer"} i stället för ny version — inpassning och namn är överflyttade, den gamla kopian kan tas bort i Trimble.` : ".");
+    fileListCache = {};
+    await refreshRegister();
   }
 
   /* Namnen som skarpa textetiketter mitt över varje inläst, namngiven ritning. */
@@ -2051,19 +2366,21 @@ END-ISO-10303-21;
     await removeMarkupIds(regLabelMarkups.splice(0));
     if(!el("regLabels3d").checked || !API) return;
     for(const m of regModels.filter(isLoaded)){
-      const rec = drawingLabels[m.id];
-      if(!rec || !rec.label) continue;
+      const rec = labelRec(m);
+      const copy = dwgCopies.find(c => c.copy_id === m.id);
+      if(!(rec && rec.label) && !copy) continue;
+      const mid = viewerIdOf(m);
       try {
-        const objs = await API.viewer.getObjects({ modelObjectIds: [{ modelId: m.id }] });
+        const objs = await API.viewer.getObjects({ modelObjectIds: [{ modelId: mid }] });
         const ids = ((objs && objs[0] && objs[0].objects) || []).map(o => o.id).slice(0, 5000);
         if(!ids.length) continue;
-        const boxes = await API.viewer.getObjectBoundingBoxes(m.id, ids);
+        const boxes = await API.viewer.getObjectBoundingBoxes(mid, ids);
         let min = { x:Infinity, y:Infinity, z:Infinity }, max = { x:-Infinity, y:-Infinity, z:-Infinity };
         boxes.forEach(b => { const bb = b.boundingBox; if(!bb) return;
           ["x","y","z"].forEach(k => { min[k] = Math.min(min[k], bb.min[k]); max[k] = Math.max(max[k], bb.max[k]); }); });
         if(!isFinite(min.x)) continue;
         const c = { xMM: (min.x+max.x)/2*1000, yMM: (min.y+max.y)/2*1000, zMM: max.z*1000 };
-        const pick = makePick(m.id, c.xMM, c.yMM, c.zMM);
+        const pick = makePick(mid, c.xMM, c.yMM, c.zMM);
         const added = await API.markup.addTextMarkup([{ text: displayName(m), color: { r:37, g:99, b:235, a:255 }, start: pick, end: pick }]);
         (added || []).forEach(a => { if(a && a.id != null) regLabelMarkups.push(a.id); });
       } catch(err){
@@ -2145,16 +2462,18 @@ END-ISO-10303-21;
     return proj.rootId;
   }
 
-  /* Går igenom projektets mappar (bredden först) och returnerar alla PDF:er.
-     onProgress(pdfsHittills, mapparLästa) för att visa att något händer. */
-  let pdfListCache = null;
-  async function listProjectPdfFiles(onProgress){
-    if(pdfListCache) return pdfListCache;
+  /* Går igenom projektets mappar (bredden först) och returnerar alla filer
+     vars namn matchar `pattern`, med mapp (path) och mappens id (folderId).
+     onProgress(antalHittills, mapparLästa) för att visa att något händer. */
+  let fileListCache = {};
+  async function listProjectFiles(pattern, onProgress){
+    const cacheKey = String(pattern);
+    if(fileListCache[cacheKey]) return fileListCache[cacheKey];
     const rootId = await getRootFolderId();
     const queue = [{ id: rootId, path: "" }];
-    const pdfs = [];
+    const found = [];
     let folders = 0;
-    const MAX_FOLDERS = 400;
+    const MAX_FOLDERS = 600;
     while(queue.length && folders < MAX_FOLDERS){
       const batch = queue.splice(0, 6);           // några mappar parallellt
       const results = await Promise.all(batch.map(f =>
@@ -2164,16 +2483,17 @@ END-ISO-10303-21;
         const list = Array.isArray(items) ? items : (items && (items.items || items.data)) || [];
         for(const it of list){
           if(it.type === "FOLDER") queue.push({ id: it.id, path: `${f.path}/${it.name}` });
-          else if(/\.pdf$/i.test(it.name || "")) pdfs.push({ ...it, path: f.path || "/" });
+          else if(pattern.test(it.name || "")) found.push({ ...it, path: f.path || "/", folderId: f.id });
         }
       }
-      if(onProgress) onProgress(pdfs.length, folders);
+      if(onProgress) onProgress(found.length, folders);
     }
     if(queue.length) log(`Slutade söka efter ${MAX_FOLDERS} mappar - ${queue.length} mappar ej genomsökta.`);
-    pdfs.sort((a,b) => String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
-    pdfListCache = pdfs;
-    return pdfs;
+    found.sort((a,b) => String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
+    fileListCache[cacheKey] = found;
+    return found;
   }
+  const listProjectPdfFiles = onProgress => listProjectFiles(/\.pdf$/i, onProgress);
 
   async function downloadTcFile(fileInfo){
     const qs = new URLSearchParams();
@@ -2200,7 +2520,12 @@ END-ISO-10303-21;
   }
 
   async function uploadTcFile(name, content, mime){
-    const folderId = await ensureUploadFolder();
+    return { ...(await uploadBytesToFolder(await ensureUploadFolder(), name, content, mime)), folder: UPLOAD_FOLDER_NAME };
+  }
+
+  /* Laddar upp innehåll som fil i en viss mapp. Finns redan en fil med samma
+     namn i mappen blir det (i Trimble Connect) en ny version av den. */
+  async function uploadBytesToFolder(folderId, name, content, mime){
     const init = await tcJson(`/files/fs/upload?parentId=${encodeURIComponent(folderId)}&parentType=FOLDER`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name })
     });
@@ -2230,7 +2555,7 @@ END-ISO-10303-21;
     }
     if(result.status === "ERROR") throw new Error("Uppladdningen misslyckades: " + (result.errorReason || "okänt fel"));
     log("Uppladdad:", name, result.fileId);
-    return { fileId: result.fileId, versionId: result.versionId, folder: UPLOAD_FOLDER_NAME };
+    return { fileId: result.fileId, versionId: result.versionId };
   }
 
   // ---------------- Workspace connection & 3D pick routing ----------------
@@ -2282,8 +2607,8 @@ END-ISO-10303-21;
     try {
       API = await TrimbleConnectWorkspace.connect(window.parent, onWorkspaceEvent, 20000);
       statusEl.textContent = "Ansluten";
-      loadDrawingLabels().catch(e => log("Ritningsregister:", e.message||e));
-      syncSharedPlacements().then(autoApplyPlacements).catch(e => log("Inpassningar:", e.message||e));
+      loadDrawingLabels().catch(e => log("Ritningsregister:", e.message||e))
+        .then(syncSharedPlacements).then(autoApplyPlacements).catch(e => log("Inpassningar:", e.message||e));
       try {
         const sel = await API.viewer.getSelection();
         if(sel && sel[0]) currentModelIdGuess = sel[0].modelId;

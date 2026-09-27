@@ -351,6 +351,7 @@
       </div>
       <div class="inline" style="margin-bottom:6px;">
         <label><input type="checkbox" id="regOnlyDrawings" checked> Bara DWG/DXF</label>
+        <label><input type="checkbox" id="regOnlyFixed"> Bara mina fixade</label>
         <label><input type="checkbox" id="regLabels3d"> Visa namnen i 3D (inlästa ritningar)</label>
       </div>
       <div class="hint" id="regStorage" style="margin-bottom:6px;"></div>
@@ -1359,7 +1360,14 @@ END-ISO-10303-21;
   }
   function loadSavedPlacements(){ try { return JSON.parse(localStorage.getItem(DWG_STORE_KEY) || "{}") || {}; } catch(e){ return {}; } }
   function savePlacement(modelId, placement){
-    try { const all = loadSavedPlacements(); all[modelId] = placement; localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+    // Filnamnet sparas med, så att ritningsregistret kan visa inpassade
+    // ritningar även när Trimble inte listar dem (mappen ej öppnad).
+    const spec = (dwg.models || []).find(m => m.id === modelId);
+    try {
+      const all = loadSavedPlacements();
+      all[modelId] = { ...placement, _name: (spec && spec.name) || (all[modelId] && all[modelId]._name) || null, _saved_at: new Date().toISOString() };
+      localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all));
+    } catch(e){}
   }
 
   el("btnDwgAlign").onclick = async () => {
@@ -1814,12 +1822,23 @@ END-ISO-10303-21;
   el("btnRegRefresh").onclick = () => refreshRegister();
   el("regSearch").oninput = () => renderRegister();
   el("regOnlyDrawings").onchange = () => renderRegister();
+  el("regOnlyFixed").onchange = () => renderRegister();
   el("regLabels3d").onchange = () => updateRegLabels3d();
 
   async function refreshRegister(){
     el("regList").innerHTML = '<div class="hint">Läser modeller…</div>';
     try { regModels = await API.viewer.getModels(); } catch(e){ regModels = []; log("getModels misslyckades:", e.message||e); }
     await loadDrawingLabels();
+    // Ritningar som fått ett namn eller passats in ska alltid synas, även när
+    // Trimble inte listar dem (getModels ser bara mappar som öppnats i
+    // Modeller-panelen). De läggs till från registret och sparade placeringar.
+    const known = new Set(regModels.map(m => m.id));
+    Object.values(drawingLabels).forEach(r => {
+      if(!known.has(r.model_id)){ regModels.push({ id: r.model_id, name: r.file_name || r.model_id, state: "", _remembered: true }); known.add(r.model_id); }
+    });
+    Object.entries(loadSavedPlacements()).forEach(([id, p]) => {
+      if(!known.has(id)){ regModels.push({ id, name: (p && p._name) || id, state: "", _remembered: true }); known.add(id); }
+    });
     renderRegister();
     updateRegLabels3d();
   }
@@ -1830,10 +1849,13 @@ END-ISO-10303-21;
   function renderRegister(){
     const q = el("regSearch").value.trim().toLowerCase();
     const onlyDrw = el("regOnlyDrawings").checked;
+    const placements = loadSavedPlacements();
+    const isFixed = m => !!((drawingLabels[m.id] && drawingLabels[m.id].label) || placements[m.id]);
     const rows = regModels
       .filter(m => !onlyDrw || isDrawingModel(m))
+      .filter(m => !el("regOnlyFixed").checked || isFixed(m))
       .filter(m => !q || (`${m.name||""} ${(drawingLabels[m.id]||{}).label||""}`).toLowerCase().includes(q))
-      .sort((a,b) => (isLoaded(b) - isLoaded(a)) || String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
+      .sort((a,b) => (isFixed(b) - isFixed(a)) || (isLoaded(b) - isLoaded(a)) || String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
     const list = el("regList");
     list.innerHTML = "";
     if(!rows.length){
@@ -1852,17 +1874,48 @@ END-ISO-10303-21;
       name.title = m.name || m.id;
       const state = document.createElement("span");
       state.className = "reg-state";
-      state.textContent = isLoaded(m) ? "● inläst" : "";
+      state.textContent = [
+        placements[m.id] ? "📐 inpassad" : "",
+        isLoaded(m) ? "● inläst" : m._remembered ? "ej i Trimbles lista" : ""
+      ].filter(Boolean).join(" · ");
+      if(m._remembered) state.title = "Trimble listar bara filer i mappar som öppnats i Modeller-panelen. Ritningen visas här ändå eftersom du har namngett eller passat in den.";
       const show = document.createElement("button");
       show.className = "ghost";
       show.textContent = isLoaded(m) ? "Zooma" : "Visa i 3D";
       show.onclick = async () => {
         try {
-          if(!isLoaded(m)){ await API.viewer.toggleModel(m.id, true, true); m.state = "loaded"; renderRegister(); updateRegLabels3d(); }
+          if(!isLoaded(m)){
+            await API.viewer.toggleModel(m.id, true, true);
+            m.state = "loaded";
+            // Lägg på den sparade inpassningen direkt (placeModel gäller bara visningen).
+            if(placements[m.id]){
+              try { await API.viewer.placeModel(m.id, clonePlacement(placements[m.id])); dwg.applied[m.id] = clonePlacement(placements[m.id]); }
+              catch(e){ log("Kunde inte lägga på sparad placering:", e.message||e); }
+            }
+            renderRegister(); updateRegLabels3d();
+          }
           else await API.viewer.setCamera({ modelObjectIds: [{ modelId: m.id }] }, { animationTime: 600 });
-        } catch(err){ log("Kunde inte visa modellen:", err.message||err); }
+        } catch(err){
+          log("Kunde inte visa modellen:", err.message||err);
+          meta.textContent = m._remembered
+            ? "⚠ Trimble hittar inte ritningen just nu — öppna dess mapp i Modeller-panelen och klicka ↻."
+            : "⚠ Kunde inte läsa in ritningen: " + (err.message||err);
+        }
       };
       head.append(name, state, show);
+      if(placements[m.id]){
+        const forget = document.createElement("button");
+        forget.className = "ghost";
+        forget.textContent = "✕";
+        forget.title = "Glöm den sparade inpassningen (ritningen i Trimble påverkas inte)";
+        forget.onclick = () => {
+          if(!confirm(`Glömma den sparade inpassningen för ${m.name}?`)) return;
+          try { const all = loadSavedPlacements(); delete all[m.id]; localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+          if(m._remembered && !(drawingLabels[m.id] && drawingLabels[m.id].label)) regModels = regModels.filter(x => x.id !== m.id);
+          renderRegister();
+        };
+        head.appendChild(forget);
+      }
       const input = document.createElement("input");
       input.type = "text";
       input.placeholder = "Fritext efter ritningsnumret…";

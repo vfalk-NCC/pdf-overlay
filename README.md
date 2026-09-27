@@ -117,6 +117,32 @@ Antagande att verifiera i Trimble: `ModelPlacement` tolkas som
 `refDirection`/`axis`. Hamnar DWG:n fel trots att avvikelsen visas som
 0 mm, skicka 🐞 Rådata-loggen (loggar `placeModel` och modellistan).
 
+## 🏷️ Ritningsregister
+
+Trimble Connect saknar ett fält för egna namn eller kommentarer på
+ritningar. **🏷️ Ritningsregister** listar projektets modeller (DWG/DXF
+som standard) med ett fritextfält efter ritningsnumret, till exempel
+"Sektion A-A vägg 3, gäller DP2".
+
+- **Revideringar:** texten kopplas till filen i Trimble Connect, inte till
+  en version, och ligger kvar när ritningen revideras. Filen i sig ändras
+  inte.
+- **Var namnet syns:** i "📐 Vrid in DWG/modell" som
+  "5082648 – Sektion A-A vägg 3". Med **Visa namnen i 3D** visas det som
+  en skarp textetikett över varje inläst ritning.
+- **Sök och visa:** sök på nummer eller text. "Visa i 3D" läser in
+  ritningen, och "Zooma" flyttar kameran till en inläst ritning.
+- **Delning:** namnen sparas i `projects/<projekt-id>/drawing_labels.json`
+  i det privata repot `vfalk-NCC/4D-data`, via `github-storage.js`
+  (samma som 4D-planering). Alla i projektet ser dem. Tokenen från
+  4D-planering eller anteckningsappen används automatiskt eftersom
+  tilläggen ligger på samma adress. Utan token sparas namnen bara i
+  webbläsaren.
+- **Begränsning:** Trimble listar bara filer i mappar som öppnats i
+  Modeller-panelen. Öppna mappen och klicka ↻ om en ritning saknas.
+
+`github-storage.js` är en identisk kopia av filen i 4D-planering.
+
 ## Installation
 
 Samma mönster som de andra tilläggen:

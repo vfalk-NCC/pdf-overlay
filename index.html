@@ -6,6 +6,7 @@
 <title>PDF-overlay – Trimble Connect</title>
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="github-storage.js"></script>
 <style>
   :root{
     --bg:#fff; --panel-bg:#f7f8fa; --border:#e2e4e8; --text:#1f2430; --text-muted:#6b7280;
@@ -79,6 +80,13 @@
   .inline select, .inline input[type=number]{width:auto;}
   input[type=color]{width:34px;height:24px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;}
   .angle-row label{margin-top:8px;}
+  .reg-row{border:1px solid var(--border);border-radius:8px;padding:6px 8px;margin-bottom:6px;background:#fff;}
+  .reg-row .reg-head{display:flex;align-items:center;gap:6px;font-size:12px;}
+  .reg-row .reg-name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .reg-row .reg-state{font-size:10.5px;color:var(--text-muted);}
+  .reg-row input[type=text]{margin-top:4px;}
+  .reg-row .reg-meta{font-size:10.5px;color:var(--text-muted);margin-top:2px;min-height:12px;}
+  .reg-row button{padding:2px 7px;font-size:11px;}
   .kv{font-family:Consolas,monospace;font-size:11px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;}
   #debugLog{font-size:10.5px;color:var(--text-muted);padding:6px 12px;border-top:1px solid var(--border);max-height:90px;overflow-y:auto;white-space:pre-wrap;display:none;}
   #debugLog.open{display:block;}
@@ -94,6 +102,7 @@
   <div class="toolbar">
     <button class="primary" id="btnNewOverlay">+ Ny PDF-overlay</button>
     <button class="primary" id="btnDwgAlign">📐 Vrid in DWG/modell</button>
+    <button class="primary" id="btnRegister">🏷️ Ritningsregister</button>
     <button class="ghost" id="btnDebugToggle">🐞 Rådata</button>
   </div>
 
@@ -326,6 +335,29 @@
     </div>
   </div>
 
+  <!-- ===== Ritningsregister: egna namn/kommentarer på ritningar ===== -->
+  <div class="wizard" id="regPanel">
+    <div class="step">
+      <h3>🏷️ Ritningsregister</h3>
+      <div class="hint">
+        Skriv en fritext efter ritningsnumret, t.ex. "Sektion A-A vägg 3, gäller DP2". Texten kopplas till
+        filen i Trimble Connect (inte till en version) och ligger kvar när ritningen revideras. Filen i sig
+        ändras inte.
+      </div>
+      <div class="inline" style="margin-bottom:6px;">
+        <input type="text" id="regSearch" placeholder="Sök ritningsnummer eller text…" style="flex:1;min-width:0;">
+        <button class="ghost" id="btnRegRefresh" title="Läs om modellistan och namnen">↻</button>
+        <button class="ghost" id="btnRegClose">Stäng</button>
+      </div>
+      <div class="inline" style="margin-bottom:6px;">
+        <label><input type="checkbox" id="regOnlyDrawings" checked> Bara DWG/DXF</label>
+        <label><input type="checkbox" id="regLabels3d"> Visa namnen i 3D (inlästa ritningar)</label>
+      </div>
+      <div class="hint" id="regStorage" style="margin-bottom:6px;"></div>
+      <div id="regList"></div>
+    </div>
+  </div>
+
   <div id="listHeader">
     <span class="count" id="ovCount">0 overlays</span>
   </div>
@@ -421,7 +453,7 @@
 
   // ---------------- Wizard open/close ----------------
 
-  el("btnNewOverlay").onclick = () => { resetWizard(); wizard.classList.add("open"); el("dwgWizard").classList.remove("open"); };
+  el("btnNewOverlay").onclick = () => { resetWizard(); wizard.classList.add("open"); el("dwgWizard").classList.remove("open"); el("regPanel").classList.remove("open"); };
   el("btnCancelWizard").onclick = async () => {
     await removeMarkupIds(wiz.guideMarkupIds);
     await removeMarkupIds(lineState.ids);
@@ -1332,6 +1364,7 @@ END-ISO-10303-21;
 
   el("btnDwgAlign").onclick = async () => {
     wizard.classList.remove("open");
+    el("regPanel").classList.remove("open");
     dwgWizard.classList.add("open");
     await refreshDwgModels();
   };
@@ -1351,7 +1384,7 @@ END-ISO-10303-21;
     const isDrawing = m => /\.(dwg|dxf)$/i.test(m.name||"") || /dwg|dxf/i.test(m.type||"");
     const sorted = [...dwg.models].sort((a,b) => (isDrawing(b) - isDrawing(a)) || String(a.name).localeCompare(b.name));
     sel.innerHTML = sorted.length
-      ? sorted.map(m => `<option value="${m.id}">${isDrawing(m) ? "📐 " : "🧊 "}${(m.name||m.id).replace(/</g,"&lt;")}</option>`).join("")
+      ? sorted.map(m => `<option value="${m.id}">${isDrawing(m) ? "📐 " : "🧊 "}${displayName(m).replace(/</g,"&lt;")}</option>`).join("")
       : '<option value="">Inga inlästa modeller — öppna DWG:n i 3D-vyn och klicka ↻</option>';
     const keep = dwg.modelId && sorted.some(m => m.id === dwg.modelId) ? dwg.modelId : (sorted[0] && sorted[0].id);
     // Byt bara modell (och nollställ punktparen) om valet faktiskt ändrats -
@@ -1682,6 +1715,208 @@ END-ISO-10303-21;
     catch(e){ const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
   };
 
+  // ---------------- 🏷️ Ritningsregister ----------------
+  // Egna namn/kommentarer på ritningar (och andra modeller). Trimble Connect
+  // saknar ett sådant fält. Texten kopplas till modellens id i 3D-vyn, som är
+  // filens id i Trimble Connect - samma id behålls när en ny version
+  // (revidering) laddas upp, så texten följer med.
+  //
+  // Lagring: projects/<projekt-id>/drawing_labels.json i det privata repot
+  // vfalk-NCC/4D-data (samma datalager som 4D-planering och anteckningsappen,
+  // via github-storage.js). Tillägget ligger på samma adress
+  // (vfalk-ncc.github.io), så token som angetts i 4D-planering eller
+  // anteckningsappen återanvänds. Utan token sparas texten bara i webbläsaren.
+
+  const REG_LOCAL_KEY = "pdfoverlay-drawing-labels";
+  let drawingLabels = {};          // modelId -> { model_id, file_name, label, updated_at, updated_by }
+  let regProjectId = null;
+  let regModels = [];
+  const regLabelMarkups = [];
+
+  function regToken(){
+    for(const key of ["tcnotes-settings", "4dplan-settings"]){
+      try { const t = (JSON.parse(localStorage.getItem(key) || "{}") || {}).githubToken; if(t) return t; } catch(e){}
+    }
+    return null;
+  }
+  function regUserName(){
+    for(const key of ["tcnotes-settings", "4dplan-settings"]){
+      try { const n = (JSON.parse(localStorage.getItem(key) || "{}") || {}).userName; if(n) return n; } catch(e){}
+    }
+    return null;
+  }
+  const regPath = () => `projects/${encodeURIComponent(regProjectId)}/drawing_labels.json`;
+
+  async function loadDrawingLabels(){
+    if(!regProjectId) regProjectId = await getProjectId();
+    const token = regToken();
+    let rows = [];
+    if(token && regProjectId){
+      try {
+        rows = await ghReadJSON(token, regPath());
+        el("regStorage").textContent = "Delas med alla i projektet (4D-data).";
+      } catch(err){
+        log("Kunde inte läsa ritningsregistret:", err.message||err);
+        el("regStorage").textContent = "⚠ Kunde inte läsa delade namn (" + (err.message||err) + "). Visar bara lokalt sparade.";
+        rows = regLocalRows();
+      }
+    } else {
+      rows = regLocalRows();
+      el("regStorage").textContent = "Sparas bara i den här webbläsaren. Ange GitHub-token i 4D-planering eller anteckningsappen för att dela namnen med projektet.";
+    }
+    drawingLabels = {};
+    rows.forEach(r => { if(r && r.model_id) drawingLabels[r.model_id] = r; });
+  }
+  function regLocalRows(){
+    try { return Object.values((JSON.parse(localStorage.getItem(REG_LOCAL_KEY) || "{}") || {})[regProjectId || "?"] || {}); } catch(e){ return []; }
+  }
+
+  async function saveDrawingLabel(model, label){
+    const rec = {
+      model_id: model.id,
+      file_name: model.name || null,
+      label: label.trim(),
+      updated_at: new Date().toISOString(),
+      updated_by: regUserName()
+    };
+    drawingLabels[model.id] = rec;
+    const token = regToken();
+    if(token && regProjectId){
+      await ghWriteJSON(token, regPath(), arr => {
+        const rest = arr.filter(r => r.model_id !== model.id);
+        return rec.label ? [...rest, rec] : rest;
+      }, `Ritningsregister: ${model.name || model.id}`);
+    } else {
+      try {
+        const all = JSON.parse(localStorage.getItem(REG_LOCAL_KEY) || "{}") || {};
+        const proj = all[regProjectId || "?"] = all[regProjectId || "?"] || {};
+        if(rec.label) proj[model.id] = rec; else delete proj[model.id];
+        localStorage.setItem(REG_LOCAL_KEY, JSON.stringify(all));
+      } catch(e){}
+    }
+    if(!rec.label) delete drawingLabels[model.id];
+  }
+
+  /* "5082648 – Sektion A-A vägg 3": ritningsnummer (filnamn utan ändelse) + egen text. */
+  function displayName(m){
+    const base = String(m.name || m.id).replace(/\.(dwg|dxf|ifc|pdf)$/i, "");
+    const lab = drawingLabels[m.id] && drawingLabels[m.id].label;
+    return lab ? `${base} – ${lab}` : (m.name || m.id);
+  }
+
+  el("btnRegister").onclick = async () => {
+    wizard.classList.remove("open");
+    dwgWizard.classList.remove("open");
+    el("regPanel").classList.add("open");
+    await refreshRegister();
+  };
+  el("btnRegClose").onclick = () => el("regPanel").classList.remove("open");
+  el("btnRegRefresh").onclick = () => refreshRegister();
+  el("regSearch").oninput = () => renderRegister();
+  el("regOnlyDrawings").onchange = () => renderRegister();
+  el("regLabels3d").onchange = () => updateRegLabels3d();
+
+  async function refreshRegister(){
+    el("regList").innerHTML = '<div class="hint">Läser modeller…</div>';
+    try { regModels = await API.viewer.getModels(); } catch(e){ regModels = []; log("getModels misslyckades:", e.message||e); }
+    await loadDrawingLabels();
+    renderRegister();
+    updateRegLabels3d();
+  }
+
+  const isDrawingModel = m => /\.(dwg|dxf)$/i.test(m.name||"") || /dwg|dxf/i.test(m.type||"");
+  const isLoaded = m => String(m.state||"").toLowerCase() === "loaded";
+
+  function renderRegister(){
+    const q = el("regSearch").value.trim().toLowerCase();
+    const onlyDrw = el("regOnlyDrawings").checked;
+    const rows = regModels
+      .filter(m => !onlyDrw || isDrawingModel(m))
+      .filter(m => !q || (`${m.name||""} ${(drawingLabels[m.id]||{}).label||""}`).toLowerCase().includes(q))
+      .sort((a,b) => (isLoaded(b) - isLoaded(a)) || String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
+    const list = el("regList");
+    list.innerHTML = "";
+    if(!rows.length){
+      list.innerHTML = `<div class="hint">${regModels.length ? "Inget matchar." : "Hittade inga modeller. Trimble listar bara filer i mappar som öppnats i Modeller-panelen – öppna mappen och klicka ↻."}</div>`;
+      return;
+    }
+    rows.forEach(m => {
+      const rec = drawingLabels[m.id];
+      const row = document.createElement("div");
+      row.className = "reg-row";
+      const head = document.createElement("div");
+      head.className = "reg-head";
+      const name = document.createElement("span");
+      name.className = "reg-name";
+      name.textContent = (isDrawingModel(m) ? "📐 " : "🧊 ") + (m.name || m.id);
+      name.title = m.name || m.id;
+      const state = document.createElement("span");
+      state.className = "reg-state";
+      state.textContent = isLoaded(m) ? "● inläst" : "";
+      const show = document.createElement("button");
+      show.className = "ghost";
+      show.textContent = isLoaded(m) ? "Zooma" : "Visa i 3D";
+      show.onclick = async () => {
+        try {
+          if(!isLoaded(m)){ await API.viewer.toggleModel(m.id, true, true); m.state = "loaded"; renderRegister(); updateRegLabels3d(); }
+          else await API.viewer.setCamera({ modelObjectIds: [{ modelId: m.id }] }, { animationTime: 600 });
+        } catch(err){ log("Kunde inte visa modellen:", err.message||err); }
+      };
+      head.append(name, state, show);
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "Fritext efter ritningsnumret…";
+      input.value = rec ? rec.label : "";
+      const meta = document.createElement("div");
+      meta.className = "reg-meta";
+      meta.textContent = rec ? `${rec.updated_by ? rec.updated_by + " · " : ""}${new Date(rec.updated_at).toLocaleString("sv-SE", { dateStyle:"short", timeStyle:"short" })}` : "";
+      const commit = async () => {
+        const val = input.value.trim();
+        if(val === ((drawingLabels[m.id]||{}).label || "")) return;
+        meta.textContent = "Sparar…";
+        try {
+          await saveDrawingLabel(m, val);
+          meta.textContent = val ? "✓ Sparad" : "✓ Borttagen";
+          updateRegLabels3d();
+          if(dwgWizard.classList.contains("open")) refreshDwgModels();
+        } catch(err){
+          log("Kunde inte spara namnet:", err.message||err);
+          meta.textContent = "⚠ Kunde inte spara: " + (err.message||err);
+        }
+      };
+      input.onkeydown = e => { if(e.key === "Enter") input.blur(); };
+      input.onblur = commit;
+      row.append(head, input, meta);
+      list.appendChild(row);
+    });
+  }
+
+  /* Namnen som skarpa textetiketter mitt över varje inläst, namngiven ritning. */
+  async function updateRegLabels3d(){
+    await removeMarkupIds(regLabelMarkups.splice(0));
+    if(!el("regLabels3d").checked || !API) return;
+    for(const m of regModels.filter(isLoaded)){
+      const rec = drawingLabels[m.id];
+      if(!rec || !rec.label) continue;
+      try {
+        const objs = await API.viewer.getObjects({ modelObjectIds: [{ modelId: m.id }] });
+        const ids = ((objs && objs[0] && objs[0].objects) || []).map(o => o.id).slice(0, 5000);
+        if(!ids.length) continue;
+        const boxes = await API.viewer.getObjectBoundingBoxes(m.id, ids);
+        let min = { x:Infinity, y:Infinity, z:Infinity }, max = { x:-Infinity, y:-Infinity, z:-Infinity };
+        boxes.forEach(b => { const bb = b.boundingBox; if(!bb) return;
+          ["x","y","z"].forEach(k => { min[k] = Math.min(min[k], bb.min[k]); max[k] = Math.max(max[k], bb.max[k]); }); });
+        if(!isFinite(min.x)) continue;
+        const c = { xMM: (min.x+max.x)/2*1000, yMM: (min.y+max.y)/2*1000, zMM: max.z*1000 };
+        const pick = makePick(m.id, c.xMM, c.yMM, c.zMM);
+        const added = await API.markup.addTextMarkup([{ text: displayName(m), color: { r:37, g:99, b:235, a:255 }, start: pick, end: pick }]);
+        (added || []).forEach(a => { if(a && a.id != null) regLabelMarkups.push(a.id); });
+      } catch(err){
+        log("Kunde inte sätta namnetikett för", m.name, ":", err.message||err);
+      }
+    }
+  }
+
   // ---------------- Trimble Connect file access (EXPERIMENTAL) ----------------
   // Everything in this section is best-effort: the exact REST endpoints for
   // listing/uploading project files aren't part of the publicly documented
@@ -1810,6 +2045,10 @@ END-ISO-10303-21;
     if(event === "viewer.onModelStateChanged" && dwgWizard.classList.contains("open")){
       refreshDwgModels();
     }
+    if(event === "viewer.onModelStateChanged" && el("regPanel").classList.contains("open")){
+      clearTimeout(window.__regTimer);
+      window.__regTimer = setTimeout(refreshRegister, 500);
+    }
     if(event === "viewer.onPicked" && wiz.activeTool === "3d-pick" && wiz.activePairPdfPoint){
       log("onPicked raw:", data);
       const point = extractPickPoint(data && data.data ? data.data : data);
@@ -1829,6 +2068,7 @@ END-ISO-10303-21;
     try {
       API = await TrimbleConnectWorkspace.connect(window.parent, onWorkspaceEvent, 20000);
       statusEl.textContent = "Ansluten";
+      loadDrawingLabels().catch(e => log("Ritningsregister:", e.message||e));
       try {
         const sel = await API.viewer.getSelection();
         if(sel && sel[0]) currentModelIdGuess = sel[0].modelId;

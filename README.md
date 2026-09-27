@@ -153,6 +153,8 @@ som standard) med ett fritextfält efter ritningsnumret, till exempel
   filer i mappar som öppnats i Modeller-panelen. Märkningen visar
   🏷️ (text), 📐 inpassad och "ej i Trimbles lista". **Bara mina fixade**
   filtrerar fram dem.
+- **👁 Endast aktiva:** visar bara ritningar som är inlästa (tända) i
+  3D-vyn just nu, med antal. Klicka igen för att visa alla. Valet sparas.
 - **Inläsning:** "Visa i 3D" läser in ritningen och lägger på den sparade
   inpassningen direkt. Hittar Trimble inte filen, öppna dess mapp i
   Modeller-panelen. "✕" glömmer en sparad inpassning.

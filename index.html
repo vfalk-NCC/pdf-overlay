@@ -346,6 +346,7 @@
       </div>
       <div class="inline" style="margin-bottom:6px;">
         <input type="text" id="regSearch" placeholder="Sök ritningsnummer eller text…" style="flex:1;min-width:0;">
+        <button class="ghost" id="btnRegActive" title="Visa bara modeller/ritningar som är inlästa (tända) i 3D-vyn just nu">👁 Endast aktiva</button>
         <button class="ghost" id="btnRegRefresh" title="Läs om modellistan och namnen">↻</button>
         <button class="ghost" id="btnRegClose">Stäng</button>
       </div>
@@ -1907,6 +1908,20 @@ END-ISO-10303-21;
   el("regSearch").oninput = () => renderRegister();
   el("regOnlyDrawings").onchange = () => renderRegister();
   el("regOnlyFixed").onchange = () => renderRegister();
+  // "Endast aktiva": bara inlästa (tända) modeller. Valet minns mellan sessioner.
+  let regOnlyActive = false;
+  try { regOnlyActive = localStorage.getItem("pdfoverlay-reg-only-active") === "1"; } catch(e){}
+  function renderActiveButton(){
+    const n = regModels.filter(m => isLoaded(m) && (!el("regOnlyDrawings").checked || isDrawingModel(m))).length;
+    const b = el("btnRegActive");
+    b.classList.toggle("active", regOnlyActive);
+    b.textContent = regOnlyActive ? `👁 Endast aktiva (${n}) ✓` : `👁 Endast aktiva (${n})`;
+  }
+  el("btnRegActive").onclick = () => {
+    regOnlyActive = !regOnlyActive;
+    try { localStorage.setItem("pdfoverlay-reg-only-active", regOnlyActive ? "1" : "0"); } catch(e){}
+    renderRegister();
+  };
   el("regLabels3d").onchange = () => updateRegLabels3d();
 
   async function refreshRegister(){
@@ -1932,6 +1947,7 @@ END-ISO-10303-21;
   const isLoaded = m => String(m.state||"").toLowerCase() === "loaded";
 
   function renderRegister(){
+    renderActiveButton();
     const q = el("regSearch").value.trim().toLowerCase();
     const onlyDrw = el("regOnlyDrawings").checked;
     const placements = loadSavedPlacements();
@@ -1939,12 +1955,13 @@ END-ISO-10303-21;
     const rows = regModels
       .filter(m => !onlyDrw || isDrawingModel(m))
       .filter(m => !el("regOnlyFixed").checked || isFixed(m))
+      .filter(m => !regOnlyActive || isLoaded(m))
       .filter(m => !q || (`${m.name||""} ${(drawingLabels[m.id]||{}).label||""}`).toLowerCase().includes(q))
       .sort((a,b) => (isFixed(b) - isFixed(a)) || (isLoaded(b) - isLoaded(a)) || String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
     const list = el("regList");
     list.innerHTML = "";
     if(!rows.length){
-      list.innerHTML = `<div class="hint">${regModels.length ? "Inget matchar." : "Hittade inga modeller. Trimble listar bara filer i mappar som öppnats i Modeller-panelen – öppna mappen och klicka ↻."}</div>`;
+      list.innerHTML = `<div class="hint">${regModels.length ? (regOnlyActive ? "Inga aktiva (inlästa) ritningar just nu – tänd en ritning i Modeller-panelen, eller klicka 👁 Endast aktiva för att visa alla." : "Inget matchar.") : "Hittade inga modeller. Trimble listar bara filer i mappar som öppnats i Modeller-panelen – öppna mappen och klicka ↻."}</div>`;
       return;
     }
     rows.forEach(m => {

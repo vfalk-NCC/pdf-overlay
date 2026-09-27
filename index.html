@@ -364,7 +364,11 @@
         <label><input type="checkbox" id="regLabels3d"> Visa namnen i 3D (inlästa ritningar)</label>
       </div>
       <div class="hint" id="regStorage" style="margin-bottom:6px;"></div>
-      <div class="hint" id="regScan" style="margin-bottom:6px;"></div>
+      <div class="inline" style="margin-bottom:4px;">
+        <span class="hint" id="regScan" style="margin:0;flex:1;"></span>
+        <button class="ghost" id="btnRegScope" title="Välj vilka huvudmappar som ska sökas igenom efter ritningar">📁 Sökmappar</button>
+      </div>
+      <div class="box" id="regScopeBox" style="display:none;"></div>
       <div class="box" id="regCopyBanner" style="display:none;"></div>
       <div id="regList"></div>
     </div>
@@ -1979,7 +1983,7 @@ END-ISO-10303-21;
     await refreshRegister();
   };
   el("btnRegClose").onclick = () => el("regPanel").classList.remove("open");
-  el("btnRegRefresh").onclick = () => { fileListCache = {}; regFileScanDone = false; refreshRegister(); };
+  el("btnRegRefresh").onclick = () => refreshRegister({ forceScan: true });
   el("regSearch").oninput = () => renderRegister();
   el("regOnlyDrawings").onchange = () => renderRegister();
   el("regOnlyFixed").onchange = () => renderRegister();
@@ -2007,34 +2011,129 @@ END-ISO-10303-21;
   const isDrawingModel = m => /\.(dwg|dxf)$/i.test(m.name||"") || /dwg|dxf/i.test(m.type||"");
   const isLoaded = m => String(m.state||"").toLowerCase() === "loaded";
 
-  async function refreshRegister(){
-    el("regList").innerHTML = '<div class="hint">Läser modeller…</div>';
-    let viewerModels = [];
-    try { viewerModels = await API.viewer.getModels(); } catch(e){ log("getModels misslyckades:", e.message||e); }
+  // ---- Filindex (cache) ----
+  // Att söka igenom hundratals mappar tar tid. Resultatet sparas därför som
+  // ett index - i webbläsaren och delat i projects/<id>/dwg_index.json - så
+  // att registret öppnas direkt. Indexet uppdateras i bakgrunden när det är
+  // äldre än INDEX_MAX_AGE_MIN (eller med ↻), och kopior läggs in direkt i
+  // indexet i stället för att hela projektet söks igenom igen.
+  const INDEX_LOCAL_KEY = "pdfoverlay-dwg-index";
+  const SCOPE_LOCAL_KEY = "pdfoverlay-scan-scope";
+  const INDEX_MAX_AGE_MIN = 30;
+  const indexPath = () => `projects/${encodeURIComponent(regProjectId)}/dwg_index.json`;
+  let dwgIndex = null;
+  let indexScan = null;          // pågående genomsökning (Promise)
+  let lastViewerModels = [];
+
+  function scanScope(){
+    try { return (JSON.parse(localStorage.getItem(SCOPE_LOCAL_KEY) || "{}") || {})[regProjectId || "?"] || []; } catch(e){ return []; }
+  }
+  function setScanScope(roots){
+    try { const all = JSON.parse(localStorage.getItem(SCOPE_LOCAL_KEY) || "{}") || {}; all[regProjectId || "?"] = roots; localStorage.setItem(SCOPE_LOCAL_KEY, JSON.stringify(all)); } catch(e){}
+  }
+  const scopeSig = roots => roots && roots.length ? roots.map(r => r.id).sort().join(",") : "*";
+  const slimFile = f => ({ type: "FILE", id: f.id, versionId: f.versionId || null, name: f.name, path: f.path, folderId: f.folderId,
+    modifiedOn: f.modifiedOn || f.modifiedTime || f.lastModified || f.createdOn || null });
+
+  async function loadIndex(){
+    if(!regProjectId) regProjectId = await getProjectId();
+    let local = null, shared = null;
+    try { local = ((JSON.parse(localStorage.getItem(INDEX_LOCAL_KEY) || "{}") || {})[regProjectId]) || null; } catch(e){}
+    const token = regToken();
+    if(token){
+      try { shared = (await ghReadJSON(token, indexPath()))[0] || null; } catch(err){ log("Kunde inte läsa delat filindex:", err.message||err); }
+    }
+    const pick = [local, shared].filter(Boolean).sort((a,b) => String(b.scanned_at).localeCompare(String(a.scanned_at)))[0] || null;
+    return pick;
+  }
+  async function saveIndex(idx, shareIt = true){
+    dwgIndex = idx;
+    try { const all = JSON.parse(localStorage.getItem(INDEX_LOCAL_KEY) || "{}") || {}; all[regProjectId] = idx; localStorage.setItem(INDEX_LOCAL_KEY, JSON.stringify(all)); }
+    catch(e){ log("Filindexet fick inte plats i webbläsarens lagring:", e.message||e); }
+    const token = regToken();
+    if(shareIt && token){
+      try { await ghWriteJSON(token, indexPath(), () => [idx], `Filindex: ${idx.files.length} DWG/DXF`); }
+      catch(err){ log("Kunde inte spara delat filindex:", err.message||err); }
+    }
+  }
+  /* Lägger in/uppdaterar enstaka filer i indexet (t.ex. en ny kopia) utan ny genomsökning. */
+  async function patchIndex(files){
+    if(!dwgIndex) return;
+    const byId = new Map(dwgIndex.files.map(f => [f.id, f]));
+    files.forEach(f => byId.set(f.id, slimFile({ ...(byId.get(f.id) || {}), ...f })));
+    await saveIndex({ ...dwgIndex, files: [...byId.values()] });
+  }
+
+  function scanIndex(){
+    if(indexScan) return indexScan;
+    const roots = scanScope();
+    indexScan = (async () => {
+      const t0 = Date.now();
+      const files = await listProjectFiles(/\.(dwg|dxf)$/i,
+        (n, folders) => { el("regScan").textContent = `🔄 Söker ritningar… ${n} DWG/DXF i ${folders} mappar`; },
+        { roots, force: true });
+      const idx = { scanned_at: new Date().toISOString(), scanned_by: regUserName(), scope: scopeSig(roots),
+        scope_names: roots.map(r => r.path), seconds: Math.round((Date.now() - t0) / 1000), files: files.map(slimFile) };
+      await saveIndex(idx);
+      return idx;
+    })().finally(() => { indexScan = null; });
+    return indexScan;
+  }
+
+  function indexAgeMin(idx){ return idx ? (Date.now() - Date.parse(idx.scanned_at)) / 60000 : Infinity; }
+  function renderIndexStatus(idx, scanning){
+    if(scanning) return;
+    const roots = scanScope();
+    el("btnRegScope").textContent = roots.length ? `📁 Sökmappar (${roots.length})` : "📁 Sökmappar: alla";
+    if(!idx){ el("regScan").textContent = ""; return; }
+    const age = indexAgeMin(idx);
+    const ageTxt = age < 1 ? "nyss" : age < 60 ? `${Math.round(age)} min sedan` : new Date(idx.scanned_at).toLocaleString("sv-SE", { dateStyle:"short", timeStyle:"short" });
+    el("regScan").textContent = `📦 ${idx.files.length} DWG/DXF · genomsökt ${ageTxt}${idx.scanned_by ? " av " + idx.scanned_by : ""}${idx.seconds ? ` (${idx.seconds} s)` : ""}`;
+  }
+
+  /* opts.forceScan: sök igenom projektet nu (↻). Annars används indexet direkt
+     och uppdateras i bakgrunden om det är gammalt. */
+  async function refreshRegister(opts = {}){
+    if(!regModels.length) el("regList").innerHTML = '<div class="hint">Läser modeller…</div>';
+    try { lastViewerModels = await API.viewer.getModels(); } catch(e){ log("getModels misslyckades:", e.message||e); }
     await loadDrawingLabels();
     await syncSharedPlacements();
 
-    // Alla DWG/DXF i projektet via filträdet (även PM-mappar som inte öppnats).
-    let files = [];
+    if(!dwgIndex) dwgIndex = await loadIndex();
+    const scopeOk = dwgIndex && dwgIndex.scope === scopeSig(scanScope());
+    if(dwgIndex && scopeOk){
+      applyIndex(dwgIndex);
+      renderIndexStatus(dwgIndex);
+      if(opts.forceScan || indexAgeMin(dwgIndex) > INDEX_MAX_AGE_MIN) backgroundScan();
+      return;
+    }
+    // Inget användbart index än: sök igenom nu (första gången, eller nya sökmappar).
+    el("regScan").textContent = "🔄 Söker ritningar i projektet… (godkänn ev. behörighetsdialog i Trimble Connect)";
+    applyIndex(null);
     try {
-      el("regScan").textContent = "Söker ritningar i projektet… (godkänn ev. behörighetsdialog i Trimble Connect)";
-      files = await listProjectFiles(/\.(dwg|dxf)$/i, (n, folders) => { el("regScan").textContent = `Söker ritningar… ${n} DWG/DXF i ${folders} mappar`; });
-      regFileScanDone = true;
-      el("regScan").textContent = `${files.length} DWG/DXF i projektet.`;
+      applyIndex(await scanIndex());
+      renderIndexStatus(dwgIndex);
     } catch(err){
       log("Kunde inte söka igenom projektets filer:", err.message||err);
       el("regScan").textContent = "⚠ Kunde inte läsa projektets filträd (" + (err.message||err) + ") — visar bara det Trimble listar just nu.";
     }
+  }
 
-    // Slå ihop: filträdet (mapp, datum) + Trimbles modellista (inläst-status).
+  function backgroundScan(){
+    scanIndex().then(idx => { applyIndex(idx); renderIndexStatus(idx); })
+      .catch(err => { log("Bakgrundssökning misslyckades:", err.message||err); renderIndexStatus(dwgIndex); });
+  }
+
+  /* Slår ihop indexet (mapp, datum) med Trimbles modellista (inläst-status) och ihågkomna. */
+  function applyIndex(idx){
+    const files = idx ? idx.files : [];
     const byId = new Map(), byVersion = new Map();
     files.forEach(f => { const m = { ...f, state: "" }; byId.set(m.id, m); if(m.versionId) byVersion.set(m.versionId, m); });
-    viewerModels.forEach(vm => {
+    (lastViewerModels || []).forEach(vm => {
       const hit = byId.get(vm.id) || (vm.versionId && byVersion.get(vm.versionId));
       if(hit){ hit.state = vm.state; hit.viewerId = vm.id; hit.type = vm.type; }
       else byId.set(vm.id, { ...vm, viewerId: vm.id });
     });
-    // Ihågkomna (namngivna/inpassade) som varken filträdet eller Trimble listar.
     Object.values(drawingLabels).forEach(r => {
       if(!String(r.model_id).startsWith("dk:") && !byId.has(r.model_id)) byId.set(r.model_id, { id: r.model_id, name: r.file_name || r.model_id, state: "", _remembered: true });
     });
@@ -2045,6 +2144,41 @@ END-ISO-10303-21;
     renderRegister();
     updateRegLabels3d();
   }
+
+  // ---- Sökmappar ----
+  el("btnRegScope").onclick = async () => {
+    const box = el("regScopeBox");
+    if(box.style.display === "block"){ box.style.display = "none"; return; }
+    box.style.display = "block";
+    box.innerHTML = '<div class="hint">Läser huvudmappar…</div>';
+    try {
+      const rootId = await getRootFolderId();
+      const items = await tcJson(`/folders/${rootId}/items`);
+      const folders = (Array.isArray(items) ? items : (items && items.items) || []).filter(it => it.type === "FOLDER")
+        .sort((a,b) => String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
+      const chosen = new Set(scanScope().map(r => r.id));
+      box.innerHTML = '<h4>📁 Sök bara i de här huvudmapparna</h4><div class="hint">Inga ikryssade = hela projektet. Färre mappar = snabbare genomsökning.</div>';
+      const listEl = document.createElement("div");
+      folders.forEach(f => {
+        const lab = document.createElement("label");
+        lab.style.cssText = "display:flex;gap:6px;align-items:center;color:var(--text);margin:2px 0;";
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = f.id; cb.dataset.path = "/" + f.name; cb.checked = chosen.has(f.id);
+        lab.append(cb, document.createTextNode(f.name));
+        listEl.appendChild(lab);
+      });
+      const save = mkBtn("Spara och sök igenom", "", async () => {
+        const roots = [...listEl.querySelectorAll("input:checked")].map(cb => ({ id: cb.value, path: cb.dataset.path }));
+        setScanScope(roots);
+        box.style.display = "none";
+        dwgIndex = null;
+        await refreshRegister();
+      });
+      save.className = "primary";
+      box.append(listEl, save);
+    } catch(err){
+      box.innerHTML = `<div class="hint">Kunde inte läsa mapparna: ${String(err.message||err).replace(/</g,"&lt;")}</div>`;
+    }
+  };
 
   /* Id som 3D-vyn använder för modellen (fil-id; normalt samma som i filträdet). */
   const viewerIdOf = m => m.viewerId || m.id;
@@ -2297,8 +2431,8 @@ END-ISO-10303-21;
       // Starta kopian på originalets inpassning, så att man bara behöver flytta den till detaljens plats.
       const placements = loadSavedPlacements();
       if(placements[src.id]){ const { _name, _saved_at, ...pl } = placements[src.id]; savePlacement(res.fileId, pl); }
+      await patchIndex([{ id: res.fileId, versionId: res.versionId, name: copyName, path: src.path, folderId: src.folderId, modifiedOn: new Date().toISOString() }]);
       meta.textContent = `✓ Kopian "${copyName}" skapad i samma mapp. Visa den i 3D och passa in den med 📐 Vrid in DWG/modell.`;
-      fileListCache = {};
       await refreshRegister();
     } catch(err){
       log("Kunde inte skapa kopia:", err.message||err);
@@ -2346,6 +2480,8 @@ END-ISO-10303-21;
           if(drawingLabels[oldId]) await saveDrawingLabel(res.fileId, c.copy_name, drawingLabels[oldId].label);
         }
         await saveCopyRecord(rec, res.fileId !== oldId ? oldId : null);
+        const oldFile = regModels.find(m => m.id === oldId) || {};
+        await patchIndex([{ id: res.fileId, versionId: res.versionId, name: c.copy_name, path: oldFile.path, folderId: c.folder_id, modifiedOn: new Date().toISOString() }]);
         // Läs om kopian i 3D så att den nya versionen visas; inpassningen läggs på igen automatiskt.
         if(file && isLoaded(file)){ await toggleModelSafe(file, false); await toggleModelSafe({ ...file, id: res.fileId, viewerId: res.fileId }, true); }
         ok++;
@@ -2357,7 +2493,6 @@ END-ISO-10303-21;
     statusEl.textContent = `✓ ${ok} kopi${ok === 1 ? "a" : "or"} uppdaterad${ok === 1 ? "" : "e"}`
       + (failed ? `, ⚠ ${failed} misslyckades (se 🐞 Rådata)` : "")
       + (newFiles ? `. Obs: Trimble skapade ${newFiles} ny${newFiles === 1 ? " fil" : "a filer"} i stället för ny version — inpassning och namn är överflyttade, den gamla kopian kan tas bort i Trimble.` : ".");
-    fileListCache = {};
     await refreshRegister();
   }
 
@@ -2466,16 +2601,18 @@ END-ISO-10303-21;
      vars namn matchar `pattern`, med mapp (path) och mappens id (folderId).
      onProgress(antalHittills, mapparLästa) för att visa att något händer. */
   let fileListCache = {};
-  async function listProjectFiles(pattern, onProgress){
-    const cacheKey = String(pattern);
-    if(fileListCache[cacheKey]) return fileListCache[cacheKey];
-    const rootId = await getRootFolderId();
-    const queue = [{ id: rootId, path: "" }];
+  /* opts.roots: [{id, path}] att börja i (standard: projektets rotmapp).
+     opts.force: läs om även om resultatet finns i minnet. */
+  async function listProjectFiles(pattern, onProgress, opts = {}){
+    const roots = opts.roots && opts.roots.length ? opts.roots : null;
+    const cacheKey = String(pattern) + "|" + (roots ? roots.map(r => r.id).join(",") : "*");
+    if(fileListCache[cacheKey] && !opts.force) return fileListCache[cacheKey];
+    const queue = roots ? roots.map(r => ({ id: r.id, path: r.path })) : [{ id: await getRootFolderId(), path: "" }];
     const found = [];
     let folders = 0;
-    const MAX_FOLDERS = 600;
+    const MAX_FOLDERS = 1500;
     while(queue.length && folders < MAX_FOLDERS){
-      const batch = queue.splice(0, 6);           // några mappar parallellt
+      const batch = queue.splice(0, 12);          // 12 mappar parallellt
       const results = await Promise.all(batch.map(f =>
         tcJson(`/folders/${f.id}/items`).then(items => ({ f, items })).catch(err => { log("Kunde inte läsa mapp", f.path||"/", err.message||err); return { f, items: [] }; })));
       for(const { f, items } of results){

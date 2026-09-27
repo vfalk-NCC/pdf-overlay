@@ -132,6 +132,23 @@ Antagande att verifiera i Trimble: `ModelPlacement` tolkas som
 Listar projektets DWG/DXF, även i mappar som inte öppnats. Tillägget går
 igenom projektets filträd via Trimbles Core API.
 
+### Snabbt: sparat filindex
+Att söka igenom hundratals mappar tar tid, så resultatet sparas som ett
+**filindex**, både i webbläsaren och delat i
+`projects/<projekt-id>/dwg_index.json`.
+- **Direkt öppning:** registret visas med indexet, till exempel
+  "📦 1034 DWG/DXF · genomsökt 12 min sedan av Victor".
+- **Delat:** den som söker igenom projektet gör det åt alla.
+- **Bakgrundsuppdatering:** är indexet äldre än 30 minuter söks projektet
+  igenom i bakgrunden medan listan redan visas. **↻** söker igenom
+  direkt.
+- **Kopior** läggs in i indexet direkt, utan ny genomsökning.
+- **📁 Sökmappar:** välj vilka huvudmappar som ska sökas igenom, till
+  exempel bara ritningsmapparna. Färre mappar ger snabbare sökning.
+  Valet sparas i webbläsaren. Tillägget läser 12 mappar samtidigt.
+- **Nya revisioner** syns när indexet uppdateras, automatiskt efter
+  30 minuter eller direkt med ↻.
+
 ### Bara senaste revisionen
 Revisioner laddas ofta upp som **nya filer i nya PM-mappar**. Registret
 grupperar därför filerna på **ritningsnummer** och visar en rad per
@@ -182,6 +199,7 @@ bakgrunden.
     `dk:<ritningsnummer>`)
   - `dwg_placements.json`: inpassningar
   - `dwg_copies.json`: kopior
+  - `dwg_index.json`: filindex (senaste genomsökningen)
 
   Utan token sparas allt bara i webbläsaren.
 

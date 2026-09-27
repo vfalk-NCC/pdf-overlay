@@ -138,8 +138,15 @@ som standard) med ett fritextfält efter ritningsnumret, till exempel
   4D-planering eller anteckningsappen används automatiskt eftersom
   tilläggen ligger på samma adress. Utan token sparas namnen bara i
   webbläsaren.
-- **Begränsning:** Trimble listar bara filer i mappar som öppnats i
-  Modeller-panelen. Öppna mappen och klicka ↻ om en ritning saknas.
+- **Fixade ritningar syns alltid:** ritningar du har namngett eller passat
+  in listas överst, även när Trimble inte listar dem. Trimble ser bara
+  filer i mappar som öppnats i Modeller-panelen. Märkningen visar
+  🏷️ (text), 📐 inpassad och "ej i Trimbles lista". **Bara mina fixade**
+  filtrerar fram dem.
+- **Inläsning:** "Visa i 3D" läser in ritningen och lägger på den sparade
+  inpassningen direkt. Hittar Trimble inte filen, öppna dess mapp i
+  Modeller-panelen. "✕" glömmer en sparad inpassning.
+- **Lagring:** inpassningarna sparas i webbläsaren, namnen delat.
 
 `github-storage.js` är en identisk kopia av filen i 4D-planering.
 

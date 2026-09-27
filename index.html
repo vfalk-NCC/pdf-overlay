@@ -508,9 +508,11 @@
   el("btnPickFromTC").onclick = async () => {
     const box = el("fileList");
     box.style.display = "block";
-    box.innerHTML = '<div class="filerow">Söker PDF-filer i projektet…</div>';
+    box.innerHTML = '<div class="filerow">Söker PDF-filer i projektet… (godkänn ev. behörighetsdialog i Trimble Connect)</div>';
     try {
-      const files = await listProjectPdfFiles();
+      const files = await listProjectPdfFiles((n, folders) => {
+        box.innerHTML = `<div class="filerow">Söker… ${n} PDF:er i ${folders} mappar</div>`;
+      });
       if(!files.length){
         box.innerHTML = '<div class="filerow">Hittade inga PDF-filer. Kontrollera "🐞 Rådata" om detta verkar fel — filsökningen är experimentell.</div>';
         return;
@@ -520,6 +522,11 @@
         const row = document.createElement("div");
         row.className = "filerow";
         row.textContent = f.name;
+        row.title = f.path;
+        const where = document.createElement("div");
+        where.style.cssText = "font-size:10.5px;color:var(--text-muted);";
+        where.textContent = f.path;
+        row.appendChild(where);
         row.onclick = async () => {
           [...box.children].forEach(c => c.classList.remove("selected"));
           row.classList.add("selected");
@@ -542,7 +549,11 @@
       });
     } catch(err){
       log("Kunde inte lista PDF-filer:", err.message||err);
-      box.innerHTML = '<div class="filerow">Filsökning misslyckades — se 🐞 Rådata. Använd "Ladda upp lokal PDF" istället.</div>';
+      box.innerHTML = "";
+      const msg = document.createElement("div");
+      msg.className = "filerow";
+      msg.textContent = "Kunde inte läsa projektets filer: " + (err.message || err) + ' — använd "Ladda upp lokal PDF" så länge.';
+      box.appendChild(msg);
     }
   };
 
@@ -1078,10 +1089,10 @@
       const d = await currentDxf();
       el("lockStatus").textContent = "Laddar upp DXF…";
       await uploadTcFile(d.name, d.text, "application/dxf");
-      el("lockStatus").textContent = `DXF uppladdad (${d.name}). Öppna den i 3D-vyn från Modeller-panelen.`;
+      el("lockStatus").textContent = `DXF uppladdad till mappen "PDF-overlay" (${d.name}). Öppna den i 3D-vyn från Modeller-panelen.`;
     } catch(err){
       log("DXF-uppladdning misslyckades:", err.message||err);
-      el("lockStatus").textContent = "Uppladdningen misslyckades (experimentellt API-anrop, se 🐞 Rådata) — ladda ner DXF:en och ladda upp den manuellt i Trimble Connect.";
+      el("lockStatus").textContent = "Uppladdningen misslyckades: " + (err.message || err) + " — ladda ner DXF:en och ladda upp den manuellt i Trimble Connect.";
     }
   };
 
@@ -1228,10 +1239,10 @@ END-ISO-10303-21;
       el("lockStatus").textContent = "Försöker ladda upp till projektet…";
       await uploadTcFile(wiz._lastIfcName, ifcText, "application/x-step");
       await uploadTcFile(wiz._lastCalibName, wiz._lastCalibText, "application/json");
-      uploadNote = "Uppladdning till projektet lyckades.";
+      uploadNote = 'Uppladdat till mappen "PDF-overlay" i projektet.';
     } catch(err){
       log("Automatisk uppladdning misslyckades:", err.message||err);
-      uploadNote = "Automatisk uppladdning misslyckades (experimentellt API-anrop, se 🐞 Rådata) — ladda ner filerna nedan och testa manuell uppladdning istället.";
+      uploadNote = "Uppladdningen misslyckades: " + (err.message || err) + " — ladda ner filerna nedan och ladda upp dem manuellt.";
     }
     el("lockStatus").textContent = uploadNote;
 
@@ -1362,12 +1373,84 @@ END-ISO-10303-21;
   function savePlacement(modelId, placement){
     // Filnamnet sparas med, så att ritningsregistret kan visa inpassade
     // ritningar även när Trimble inte listar dem (mappen ej öppnad).
-    const spec = (dwg.models || []).find(m => m.id === modelId);
+    const spec = (dwg.models || []).find(m => m.id === modelId) || (regModels || []).find(m => m.id === modelId);
+    let rec = null;
     try {
       const all = loadSavedPlacements();
-      all[modelId] = { ...placement, _name: (spec && spec.name) || (all[modelId] && all[modelId]._name) || null, _saved_at: new Date().toISOString() };
+      rec = all[modelId] = { ...placement, _name: (spec && spec.name) || (all[modelId] && all[modelId]._name) || null, _saved_at: new Date().toISOString() };
       localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all));
     } catch(e){}
+    if(rec) scheduleSharedPlacementSave(modelId, rec);
+  }
+
+  // ---- Delade inpassningar (4D-data) + automatisk påläggning ----
+  // viewer.placeModel gäller bara den aktuella visningen: släcker man och
+  // tänder modellen laddar Trimble om den med sin egen sparade placering.
+  // Därför (1) sparas inpassningen delat i projects/<id>/dwg_placements.json
+  // så att alla i projektet har den, och (2) läggs den på igen automatiskt
+  // varje gång ritningen läses in medan tillägget är öppet.
+  const placementPath = () => `projects/${encodeURIComponent(regProjectId)}/dwg_placements.json`;
+  const sharedSaveTimers = {};
+  function scheduleSharedPlacementSave(modelId, rec){
+    // Reglagen sparar vid varje rörelse - skriv till GitHub först när man
+    // slutat justera (GitHub begränsar antalet skrivningar per minut).
+    clearTimeout(sharedSaveTimers[modelId]);
+    sharedSaveTimers[modelId] = setTimeout(() => writeSharedPlacement(modelId, rec).catch(err =>
+      log("Kunde inte spara inpassningen delat:", err.message||err)), 3000);
+  }
+  async function writeSharedPlacement(modelId, rec){
+    const token = regToken();
+    if(!token) return;
+    if(!regProjectId) regProjectId = await getProjectId();
+    const { _name, _saved_at, ...placement } = rec || {};
+    await ghWriteJSON(token, placementPath(), arr => {
+      const rest = arr.filter(r => r.model_id !== modelId);
+      return rec ? [...rest, { model_id: modelId, file_name: _name || null, placement, updated_at: _saved_at || new Date().toISOString(), updated_by: regUserName() }] : rest;
+    }, `Inpassning: ${(rec && rec._name) || modelId}`);
+  }
+  function forgetPlacement(modelId){
+    try { const all = loadSavedPlacements(); delete all[modelId]; localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+    clearTimeout(sharedSaveTimers[modelId]);
+    writeSharedPlacement(modelId, null).catch(err => log("Kunde inte ta bort delad inpassning:", err.message||err));
+  }
+  /* Hämtar delade inpassningar och slår ihop med de lokala (nyast vinner). */
+  async function syncSharedPlacements(){
+    const token = regToken();
+    if(!token) return;
+    if(!regProjectId) regProjectId = await getProjectId();
+    try {
+      const rows = await ghReadJSON(token, placementPath());
+      const all = loadSavedPlacements();
+      rows.forEach(r => {
+        if(!r || !r.model_id || !r.placement) return;
+        const local = all[r.model_id];
+        if(!local || String(local._saved_at || "") < String(r.updated_at || "")){
+          all[r.model_id] = { ...r.placement, _name: r.file_name || null, _saved_at: r.updated_at };
+        }
+      });
+      localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all));
+    } catch(err){ log("Kunde inte läsa delade inpassningar:", err.message||err); }
+  }
+
+  const autoApplied = new Set();     // modeller vi redan lagt på placering för i nuvarande inläsning
+  let autoApplyTimer = null;
+  function scheduleAutoApply(){ clearTimeout(autoApplyTimer); autoApplyTimer = setTimeout(autoApplyPlacements, 700); }
+  async function autoApplyPlacements(){
+    if(!API) return;
+    let loaded = [];
+    try { loaded = await API.viewer.getModels("loaded"); } catch(e){ return; }
+    const loadedIds = new Set((loaded||[]).map(m => m.id));
+    [...autoApplied].forEach(id => { if(!loadedIds.has(id)) autoApplied.delete(id); });   // släckt -> läggs på igen nästa gång
+    const saved = loadSavedPlacements();
+    for(const m of loaded || []){
+      if(autoApplied.has(m.id) || !saved[m.id]) continue;
+      autoApplied.add(m.id);
+      try {
+        await API.viewer.placeModel(m.id, clonePlacement(saved[m.id]));
+        dwg.applied[m.id] = clonePlacement(saved[m.id]);
+        log("Lade på sparad inpassning:", m.name || m.id);
+      } catch(err){ log("Kunde inte lägga på inpassning för", m.name || m.id, ":", err.message||err); }
+    }
   }
 
   el("btnDwgAlign").onclick = async () => {
@@ -1589,6 +1672,7 @@ END-ISO-10303-21;
     log("placeModel", modelId, placement);
     await API.viewer.placeModel(modelId, placement);
     dwg.applied[modelId] = placement;
+    autoApplied.add(modelId);
     savePlacement(modelId, placement);
   }
 
@@ -1710,7 +1794,7 @@ END-ISO-10303-21;
     try {
       await API.viewer.placeModel(dwg.modelId, dwg.original[dwg.modelId]);
       dwg.applied[dwg.modelId] = clonePlacement(dwg.original[dwg.modelId]);
-      try { const all = loadSavedPlacements(); delete all[dwg.modelId]; localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+      forgetPlacement(dwg.modelId);
       resetDwgPairs();
       el("dwgPairHint").textContent = "Originalplaceringen är återställd. Klicka nya punktpar om du vill göra om inriktningen.";
     } catch(err){
@@ -1829,6 +1913,7 @@ END-ISO-10303-21;
     el("regList").innerHTML = '<div class="hint">Läser modeller…</div>';
     try { regModels = await API.viewer.getModels(); } catch(e){ regModels = []; log("getModels misslyckades:", e.message||e); }
     await loadDrawingLabels();
+    await syncSharedPlacements();
     // Ritningar som fått ett namn eller passats in ska alltid synas, även när
     // Trimble inte listar dem (getModels ser bara mappar som öppnats i
     // Modeller-panelen). De läggs till från registret och sparade placeringar.
@@ -1910,7 +1995,7 @@ END-ISO-10303-21;
         forget.title = "Glöm den sparade inpassningen (ritningen i Trimble påverkas inte)";
         forget.onclick = () => {
           if(!confirm(`Glömma den sparade inpassningen för ${m.name}?`)) return;
-          try { const all = loadSavedPlacements(); delete all[m.id]; localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+          forgetPlacement(m.id);
           if(m._remembered && !(drawingLabels[m.id] && drawingLabels[m.id].label)) regModels = regModels.filter(x => x.id !== m.id);
           renderRegister();
         };
@@ -1970,118 +2055,176 @@ END-ISO-10303-21;
     }
   }
 
-  // ---------------- Trimble Connect file access (EXPERIMENTAL) ----------------
-  // Everything in this section is best-effort: the exact REST endpoints for
-  // listing/uploading project files aren't part of the publicly documented
-  // Workspace API, so this derives an API host from document.referrer and
-  // uses the access token from extension.requestPermission(). Expect to
-  // need adjustments here — check "🐞 Rådata" for the actual HTTP errors.
+  // ---------------- Trimble Connect-filer (Core API 2.0) ----------------
+  // Samma beprövade mönster som i ritningssnabbtitten (bekräftat mot riktig
+  // Trimble Connect):
+  //  - Token: extension.requestPermission("accesstoken") returnerar bara en
+  //    STATUS ("granted" …). Själva token-strängen kommer asynkront som
+  //    eventet "extension.accessToken". (Tidigare användes statusen som
+  //    token - därför misslyckades alla filanrop.)
+  //  - Server: regional REST-värd, app21 = EU (ert projekt). Väljs utifrån
+  //    project.location, eller fältet "Trimble API-värd" om det är ifyllt.
+  //  - Lista: projektets rotmapp (GET /projects/{id} -> rootId), sedan
+  //    GET /folders/{id}/items rekursivt.
+  //  - Ladda ner: GET /files/fs/{id}/downloadurl -> tillfällig signerad URL.
+  //  - Ladda upp: POST /files/fs/upload -> PUT -> POST /files/fs/commit.
 
-  function resolveApiBaseUrl(){
-    const override = (el("apiHostOverride") && el("apiHostOverride").value || "").trim();
-    if(override) return [override.replace(/\/$/,"")];
-    if(apiBaseUrl) return [apiBaseUrl];
-    let referrerHost = null;
-    try { if(document.referrer) referrerHost = new URL(document.referrer).host; } catch(e){}
-    const candidates = [];
-    if(referrerHost){
-      candidates.push("https://" + referrerHost);
-      // The web UI often lives on web.connect.trimble.com / app.connect.trimble.com
-      // while the REST API lives on app{N}.connect.trimble.com — try common swaps.
-      const swapped = referrerHost.replace(/^(web|app)\./, "app.");
-      if(!candidates.includes("https://"+swapped)) candidates.push("https://"+swapped);
-      for(let n = 1; n <= 25; n++){
-        const h = referrerHost.replace(/^(web|app)(\d*)\./, `app${n}.`);
-        const url = "https://"+h;
-        if(!candidates.includes(url)) candidates.push(url);
-      }
-    }
-    candidates.push("https://app.connect.trimble.com");
-    return candidates;
+  const REGION_HOSTS = { europe: "app21", eu: "app21", uk: "app22", unitedkingdom: "app22",
+    asia: "app31", ap: "app31", australia: "app32", ap2: "app32", northamerica: "app", us: "app", na: "app" };
+  let tcProjectCache = null;
+  let tokenWaiters = [];
+
+  function tcApiHost(){
+    const override = (el("apiHostOverride") && el("apiHostOverride").value || "").trim().replace(/\/$/,"");
+    if(override) return /^https?:\/\//.test(override) ? override : "https://" + override;
+    const loc = String((tcProjectCache && tcProjectCache.location) || "").toLowerCase().replace(/[^a-z0-9]/g,"");
+    return `https://${REGION_HOSTS[loc] || "app21"}.connect.trimble.com`;
   }
+  const tcUrl = path => `${tcApiHost()}/tc/api/2.0${path}`;
 
-  async function fetchWithHostFallback(pathBuilder, options){
-    const hosts = resolveApiBaseUrl();
-    let lastErr = null;
-    for(const host of hosts){
-      const url = host + pathBuilder(host);
-      try {
-        log("Provar", url);
-        const res = await fetch(url, options);
-        if(res.ok){ apiBaseUrl = host; return res; }
-        lastErr = new Error("HTTP " + res.status + " från " + url);
-        log("Ingen träff:", lastErr.message);
-      } catch(err){
-        lastErr = err;
-        log("Nätverksfel mot", url, ":", err.message || err);
-      }
-    }
-    throw lastErr || new Error("Alla värdkandidater misslyckades.");
+  async function getTcProject(){
+    if(!tcProjectCache) tcProjectCache = await API.project.getProject();
+    return tcProjectCache;
+  }
+  async function getProjectId(){
+    try { const p = await getTcProject(); return p && (p.id || p.projectId); }
+    catch(err){ log("Kunde inte hämta projekt-id:", err.message||err); return null; }
   }
 
   async function ensureAccessToken(){
     if(accessToken) return accessToken;
-    if(!API || !API.extension || !API.extension.requestPermission){
-      throw new Error("extension.requestPermission saknas i denna API-version.");
-    }
-    accessToken = await API.extension.requestPermission("accesstoken");
+    if(!API || !API.extension || !API.extension.requestPermission) throw new Error("extension.requestPermission saknas i denna API-version.");
+    const waitForToken = new Promise((resolve, reject) => {
+      tokenWaiters.push(resolve);
+      setTimeout(() => reject(new Error("Fick ingen åtkomst till projektets filer inom 60 s. Godkänn ev. behörighetsdialog i Trimble Connect och försök igen.")), 60000);
+    });
+    const status = await API.extension.requestPermission("accesstoken");
+    log("requestPermission('accesstoken'):", typeof status === "string" && status.length > 20 ? "(token)" : status);
+    if(status === "denied") throw new Error("Behörighet till projektets filer nekades.");
+    // Vissa versioner returnerar token direkt i stället för via eventet.
+    if(typeof status === "string" && status.length > 20){ accessToken = status; tokenWaiters.splice(0).forEach(r => r(status)); }
+    accessToken = await waitForToken;
     return accessToken;
   }
 
-  async function getProjectId(){
-    try {
-      const proj = await API.project.getProject();
-      return proj && (proj.id || proj.projectId);
-    } catch(err){
-      log("Kunde inte hämta project id via API.project.getProject():", err.message||err);
-      return null;
+  async function tcFetch(path, options = {}){
+    const token = await ensureAccessToken();
+    const res = await fetch(tcUrl(path), { ...options, headers: { Authorization: "Bearer " + token, ...(options.headers||{}) } });
+    if(res.status === 401){ accessToken = null; }
+    if(!res.ok){
+      let detail = "";
+      try { const t = await res.text(); try { const j = JSON.parse(t); detail = j.message || j.error || t; } catch(e){ detail = t; } } catch(e){}
+      throw new Error(`Trimble svarade ${res.status} på ${path}${detail ? " — " + String(detail).slice(0,200) : ""}`);
     }
+    return res;
+  }
+  const tcJson = async (path, options) => (await tcFetch(path, options)).json();
+
+  async function getRootFolderId(){
+    const pid = await getProjectId();
+    if(!pid) throw new Error("Hittade inget projekt-id.");
+    const proj = await tcJson(`/projects/${pid}`);
+    if(!proj.rootId) throw new Error("Hittade inte projektets rotmapp.");
+    return proj.rootId;
   }
 
-  async function listProjectPdfFiles(){
-    const token = await ensureAccessToken();
-    const projectId = await getProjectId();
-    if(!projectId) throw new Error("Hittade inget project id.");
-    const res = await fetchWithHostFallback(
-      () => `/tc/api/2.0/projects/${projectId}/files?type=file`,
-      { headers: { Authorization: "Bearer " + token } }
-    );
-    const data = await res.json();
-    const items = Array.isArray(data) ? data : (data.items || data.files || []);
-    return items.filter(f => (f.name||"").toLowerCase().endsWith(".pdf"));
+  /* Går igenom projektets mappar (bredden först) och returnerar alla PDF:er.
+     onProgress(pdfsHittills, mapparLästa) för att visa att något händer. */
+  let pdfListCache = null;
+  async function listProjectPdfFiles(onProgress){
+    if(pdfListCache) return pdfListCache;
+    const rootId = await getRootFolderId();
+    const queue = [{ id: rootId, path: "" }];
+    const pdfs = [];
+    let folders = 0;
+    const MAX_FOLDERS = 400;
+    while(queue.length && folders < MAX_FOLDERS){
+      const batch = queue.splice(0, 6);           // några mappar parallellt
+      const results = await Promise.all(batch.map(f =>
+        tcJson(`/folders/${f.id}/items`).then(items => ({ f, items })).catch(err => { log("Kunde inte läsa mapp", f.path||"/", err.message||err); return { f, items: [] }; })));
+      for(const { f, items } of results){
+        folders++;
+        const list = Array.isArray(items) ? items : (items && (items.items || items.data)) || [];
+        for(const it of list){
+          if(it.type === "FOLDER") queue.push({ id: it.id, path: `${f.path}/${it.name}` });
+          else if(/\.pdf$/i.test(it.name || "")) pdfs.push({ ...it, path: f.path || "/" });
+        }
+      }
+      if(onProgress) onProgress(pdfs.length, folders);
+    }
+    if(queue.length) log(`Slutade söka efter ${MAX_FOLDERS} mappar - ${queue.length} mappar ej genomsökta.`);
+    pdfs.sort((a,b) => String(a.name).localeCompare(String(b.name), "sv", { numeric:true }));
+    pdfListCache = pdfs;
+    return pdfs;
   }
 
   async function downloadTcFile(fileInfo){
-    const token = await ensureAccessToken();
-    if(fileInfo.downloadUrl){
-      const res = await fetch(fileInfo.downloadUrl, { headers: { Authorization: "Bearer " + token } });
-      if(!res.ok) throw new Error("HTTP " + res.status + " vid nedladdning");
-      return new Uint8Array(await res.arrayBuffer());
-    }
-    const res = await fetchWithHostFallback(
-      () => `/tc/api/2.0/files/${fileInfo.id}/download`,
-      { headers: { Authorization: "Bearer " + token } }
-    );
+    const qs = new URLSearchParams();
+    const vid = fileInfo.versionId || fileInfo.latestVersionId;
+    if(vid) qs.set("versionId", vid);
+    const { url } = await tcJson(`/files/fs/${fileInfo.id}/downloadurl?${qs.toString()}`);
+    const res = await fetch(url);
+    if(!res.ok) throw new Error("Nedladdningen misslyckades (" + res.status + ").");
     return new Uint8Array(await res.arrayBuffer());
   }
 
+  /* Uppladdningar hamnar i mappen "PDF-overlay" i projektets rot (skapas vid behov). */
+  const UPLOAD_FOLDER_NAME = "PDF-overlay";
+  let uploadFolderId = null;
+  async function ensureUploadFolder(){
+    if(uploadFolderId) return uploadFolderId;
+    const rootId = await getRootFolderId();
+    const items = await tcJson(`/folders/${rootId}/items`);
+    const list = Array.isArray(items) ? items : (items && items.items) || [];
+    const found = list.find(it => it.type === "FOLDER" && it.name === UPLOAD_FOLDER_NAME);
+    if(found) return (uploadFolderId = found.id);
+    const folder = await tcJson(`/folders`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: UPLOAD_FOLDER_NAME, parentId: rootId }) });
+    return (uploadFolderId = folder.id);
+  }
+
   async function uploadTcFile(name, content, mime){
-    const token = await ensureAccessToken();
-    const projectId = await getProjectId();
-    if(!projectId) throw new Error("Hittade inget project id för uppladdning.");
-    const blob = new Blob([content], { type: mime });
-    const form = new FormData();
-    form.append("file", blob, name);
-    const res = await fetchWithHostFallback(
-      () => `/tc/api/2.0/projects/${projectId}/files`,
-      { method: "POST", headers: { Authorization: "Bearer " + token }, body: form }
-    );
-    return await res.json().catch(()=>null);
+    const folderId = await ensureUploadFolder();
+    const init = await tcJson(`/files/fs/upload?parentId=${encodeURIComponent(folderId)}&parentType=FOLDER`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name })
+    });
+    const parts = Array.isArray(init.contents) ? init.contents : [];
+    if(!init.uploadId || !parts.length || !parts[0].url) throw new Error("Ofullständigt svar när uppladdningen skulle startas.");
+    const bytes = await new Blob([content], { type: mime }).arrayBuffer();
+    const etags = [];
+    for(let i = 0; i < parts.length; i++){
+      const part = parts[i];
+      const start = typeof part.byteOffset === "number" ? part.byteOffset : 0;
+      const size = typeof part.size === "number" ? part.size : bytes.byteLength;
+      // Rå ArrayBuffer (inte Blob) så att fetch inte sätter en egen Content-Type på den signerade länken.
+      const put = await fetch(part.url, { method: "PUT", body: parts.length > 1 ? bytes.slice(start, start+size) : bytes });
+      if(!put.ok) throw new Error(`Filöverföringen misslyckades (del ${i+1}/${parts.length}, ${put.status}).`);
+      if(parts.length > 1){
+        const etag = put.headers.get("ETag");
+        if(!etag) throw new Error("Stora filer i flera delar kräver ETag-svar som inte gick att läsa — ladda ner filen och ladda upp den manuellt.");
+        etags.push({ etag: etag.replace(/^"|"$/g,""), part_number: typeof part.partNumber === "number" ? part.partNumber : i+1 });
+      }
+    }
+    const commitBody = { uploadId: init.uploadId };
+    if(etags.length) commitBody.multipart = { upload: { parts: etags } };
+    let result = await tcJson(`/files/fs/commit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(commitBody) });
+    for(let i = 0; i < 10 && result.status && result.status !== "DONE" && result.status !== "ERROR"; i++){
+      await new Promise(r => setTimeout(r, 800));
+      result = await tcJson(`/files/fs/uploadstatus?uploadId=${encodeURIComponent(init.uploadId)}`);
+    }
+    if(result.status === "ERROR") throw new Error("Uppladdningen misslyckades: " + (result.errorReason || "okänt fel"));
+    log("Uppladdad:", name, result.fileId);
+    return { fileId: result.fileId, versionId: result.versionId, folder: UPLOAD_FOLDER_NAME };
   }
 
   // ---------------- Workspace connection & 3D pick routing ----------------
 
   async function onWorkspaceEvent(event, data){
+    if(event === "extension.accessToken"){
+      const token = data && data.data !== undefined ? data.data : data;
+      accessToken = token || null;
+      tokenWaiters.splice(0).forEach(r => r(token));
+      return;
+    }
     if(event === "viewer.onModelStateChanged" && data && data.data){
       const d = data.data;
       if(Array.isArray(d) && d[0] && d[0].modelId) currentModelIdGuess = d[0].modelId;
@@ -2098,6 +2241,7 @@ END-ISO-10303-21;
     if(event === "viewer.onModelStateChanged" && dwgWizard.classList.contains("open")){
       refreshDwgModels();
     }
+    if(event === "viewer.onModelStateChanged") scheduleAutoApply();
     if(event === "viewer.onModelStateChanged" && el("regPanel").classList.contains("open")){
       clearTimeout(window.__regTimer);
       window.__regTimer = setTimeout(refreshRegister, 500);
@@ -2122,6 +2266,7 @@ END-ISO-10303-21;
       API = await TrimbleConnectWorkspace.connect(window.parent, onWorkspaceEvent, 20000);
       statusEl.textContent = "Ansluten";
       loadDrawingLabels().catch(e => log("Ritningsregister:", e.message||e));
+      syncSharedPlacements().then(autoApplyPlacements).catch(e => log("Inpassningar:", e.message||e));
       try {
         const sel = await API.viewer.getSelection();
         if(sel && sel[0]) currentModelIdGuess = sel[0].modelId;

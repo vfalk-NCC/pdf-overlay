@@ -107,7 +107,17 @@ Flyttar och vrider en inläst modell (DWG, DXF eller IFC) direkt i vyn med
    - **Positionsinställningar:** värdena visar position, rotation X/Y/Z
      (R = Rz·Ry·Rx) och skala.
 
-Placeringen sparas i webbläsaren ("Använd sparad placering" nästa gång).
+**Inpassningen följer med:** `placeModel` gäller bara den aktuella
+visningen. Släcker och tänder man modellen laddar Trimble om den med sin
+egen placering. Därför:
+- **Automatisk påläggning:** varje gång en ritning läses in, och när
+  tillägget öppnas, lägger tillägget automatiskt på den sparade
+  inpassningen. Det gäller även nya revideringar, eftersom fil-id:t är
+  detsamma. Tillägget måste vara öppet.
+- **Delad:** inpassningen sparas i `projects/<projekt-id>/dwg_placements.json`
+  i 4D-data, så kollegor får ritningen på rätt plats. Den skrivs först när
+  man slutat justera i 3 sekunder, eftersom GitHub begränsar antalet
+  skrivningar. Utan token sparas den bara i webbläsaren.
 För att spara permanent för alla i projektet: för över de visade värdena
 (position, rotation kring Z, skala) till Trimble Connects
 **Positionsinställningar**. **↺ Återställ originalplacering** ångrar.
@@ -165,14 +175,15 @@ Workspace API:ts dokumenterade yta. Testa metodiskt och skicka gärna
 "🐞 Rådata"-loggen när något inte fungerar, så justerar vi tillsammans —
 precis som med tidigare tillägg.
 
-- **Filuppladdning/-listning mot Trimble Connect (`listProjectPdfFiles`,
-  `downloadTcFile`, `uploadTcFile`) är en kvalificerad gissning.** Den
-  exakta REST-strukturen för projektfiler är inte del av den publika
-  Workspace-API-dokumentationen. Koden gissar en URL baserat på
-  `document.referrer` (iframens värdadress) och Trimbles kända
-  `/tc/api/2.0/...`-mönster. Fungerar det inte, ladda upp lokalt istället
-  (fungerar garanterat) och skicka felmeddelandet från 🐞 Rådata så justerar
-  vi endpointen.
+- **Trimble Connect-filer:** "Välj från Trimble Connect" och
+  uppladdningarna använder Trimbles Core API 2.0 på samma sätt som
+  ritningssnabbtitten, där det är bekräftat att fungera:
+  - Åtkomst via `extension.requestPermission("accesstoken")`. Token kommer
+    som eventet `extension.accessToken`.
+  - Regional server utifrån `project.location` (EU = `app21`).
+  - Filträdet läses från projektets rotmapp.
+  - Uppladdningar hamnar i mappen "PDF-overlay".
+  - Fältet "Trimble API-värd" skriver över servern vid behov.
 - **IFC-texturering (`IfcImageTexture` med en `data:`-URI) är obeprövad.**
   Vissa IFC-importerare stödjer bara texturer via externa URL:er, inte
   inbäddade data-URI:er. Om geometrin (den platta ytan, rätt placerad)

@@ -23,6 +23,14 @@
   .header-titles{display:flex;flex-direction:column;line-height:1.15;}
   .title-row{display:flex;align-items:center;gap:6px;}
   .made-by{font-size:9px;color:var(--text-muted);}
+  .header-right{display:flex;align-items:center;gap:8px;}
+  #btnSettings{background:none;border:none;font-size:17px;padding:2px 4px;}
+  #settingsDialog{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:flex-start;justify-content:center;z-index:100;overflow-y:auto;}
+  #settingsDialog.open{display:flex;}
+  #settingsDialog .box{background:#fff;border-radius:10px;box-shadow:var(--shadow);margin:24px 10px;padding:14px;width:100%;max-width:420px;}
+  #settingsDialog h3{margin:0 0 8px;font-size:15px;}
+  #settingsDialog label{display:block;margin:10px 0 3px;font-weight:600;font-size:12px;}
+  #settingsDialog input{width:100%;}
   .version-badge{font-size:9px;font-weight:600;color:var(--text-muted);background:var(--panel-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px;white-space:nowrap;}
   .status{font-size:11px;color:var(--text-muted);}
   .toolbar{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
@@ -118,8 +126,36 @@
         <span class="made-by">Made by: VFA</span>
       </div>
     </div>
-    <span class="status" id="status">Ansluter…</span>
+    <div class="header-right">
+      <span class="status" id="status">Ansluter…</span>
+      <button id="btnSettings" title="Inställningar (GitHub-token, namn m.m.)">⚙</button>
+    </div>
   </header>
+
+  <div id="settingsDialog">
+    <div class="box">
+      <h3>⚙ Inställningar</h3>
+      <label for="setToken">GitHub-token för 4D-data</label>
+      <div class="row" style="display:flex;gap:6px;">
+        <input type="password" id="setToken" autocomplete="off" placeholder="Lämna tomt för att använda 4D-planeringens" style="flex:1;" />
+        <button class="ghost" id="btnShowToken" title="Visa/dölj">👁</button>
+      </div>
+      <div class="hint" id="tokenInfo"></div>
+      <button class="ghost" id="btnTestToken" style="margin-top:6px;">🔌 Testa anslutning</button>
+      <span class="hint" id="tokenTest"></span>
+
+      <label for="setUserName">Ditt namn</label>
+      <input type="text" id="setUserName" placeholder="Visas som ”ändrad av” på namn och inpassningar" />
+
+      <label for="apiHostOverride">Trimble API-värd (avancerat)</label>
+      <input type="text" id="apiHostOverride" placeholder="Lämna tomt för auto, t.ex. https://app21.connect.trimble.com" />
+
+      <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:14px;">
+        <button class="ghost" id="btnCloseSettings">Stäng</button>
+        <button class="primary" id="btnSaveSettings">Spara</button>
+      </div>
+    </div>
+  </div>
 
   <div class="toolbar">
     <button class="primary" id="btnNewOverlay">+ Ny PDF-overlay</button>
@@ -135,10 +171,6 @@
       <div class="row">
         <button class="ghost" id="btnPickFromTC">📁 Välj från Trimble Connect</button>
         <button class="ghost" id="btnPickLocal">💻 Ladda upp lokal PDF</button>
-      </div>
-      <div class="hint">
-        <label style="margin:6px 0 2px;">Trimble API-värd (avancerat, lämna tomt för auto)</label>
-        <input type="text" id="apiHostOverride" placeholder="t.ex. https://app21.connect.trimble.com" />
       </div>
       <input type="file" id="localFileInput" accept="application/pdf" style="display:none;" />
       <div id="fileList" style="display:none;"></div>
@@ -398,7 +430,7 @@
 
 <script>
   // Visas i headern - räkna upp vid varje ändring (som i 4D-planering).
-  const APP_VERSION = "2026-09-28 10:15";
+  const APP_VERSION = "2026-09-28 11:00";
   document.addEventListener("DOMContentLoaded", () => { const v = document.getElementById("versionBadge"); if(v) v.textContent = "Version " + APP_VERSION; });
 
 (function(){
@@ -1921,14 +1953,65 @@ END-ISO-10303-21;
     }
     throw lastErr || new Error("Ingen token");
   }
-  function askForToken(){
-    const t = (prompt("GitHub-token för 4D-data (samma som i 4D-planering):") || "").trim();
-    if(!t) return;
-    try { localStorage.setItem(OWN_TOKEN_KEY, t); } catch(e){}
-    goodToken = null;
-    loadDrawingLabels();
+  function askForToken(){ openSettings(); }
+
+  // ---- ⚙ Inställningar ----
+  const OWN_SETTINGS_KEY = "pdfoverlay-settings"; // { userName, apiHost }
+  function ownSettings(){
+    try { return JSON.parse(localStorage.getItem(OWN_SETTINGS_KEY) || "{}") || {}; } catch(e){ return {}; }
   }
+  function tokenSourceText(){
+    let own = null; try { own = localStorage.getItem(OWN_TOKEN_KEY); } catch(e){}
+    const t = regToken();
+    if(!t) return "Ingen token hittad – ange en här för att dela namn, inpassningar och kopior med projektet.";
+    if(own && t === own) return "Använder token angiven här.";
+    const src = [["4dplan-settings", "4D-planering"], ["tcnotes-settings", "Anteckningar"]]
+      .find(([k]) => { try { return (JSON.parse(localStorage.getItem(k) || "{}") || {}).githubToken === t; } catch(e){ return false; } });
+    return `Använder token från ${src ? src[1] : "annan app"} (…${t.slice(-4)}).`;
+  }
+  function openSettings(){
+    let own = ""; try { own = localStorage.getItem(OWN_TOKEN_KEY) || ""; } catch(e){}
+    el("setToken").value = own;
+    el("setToken").type = "password";
+    el("setUserName").value = ownSettings().userName || "";
+    el("tokenInfo").textContent = tokenSourceText();
+    el("tokenTest").textContent = "";
+    el("settingsDialog").classList.add("open");
+  }
+  function closeSettings(){ el("settingsDialog").classList.remove("open"); }
+  async function testToken(){
+    const typed = el("setToken").value.trim();
+    const t = typed || regToken();
+    const out = el("tokenTest");
+    if(!t){ out.textContent = "Ingen token att testa."; return; }
+    out.textContent = "Testar…";
+    try {
+      const res = await fetch("https://api.github.com/repos/vfalk-NCC/4D-data", { headers: { Authorization: "Bearer " + t, Accept: "application/vnd.github+json" } });
+      out.textContent = res.ok ? " ✓ Token fungerar." : res.status === 401 ? " ✗ GitHub avvisar token:en (401) – den har gått ut eller är fel." : res.status === 404 ? " ✗ Token:en saknar åtkomst till 4D-data (404)." : ` ✗ GitHub svarade ${res.status}.`;
+    } catch(e){ out.textContent = " ✗ " + (e.message || e); }
+  }
+  function saveSettings(){
+    const t = el("setToken").value.trim();
+    try {
+      if(t) localStorage.setItem(OWN_TOKEN_KEY, t); else localStorage.removeItem(OWN_TOKEN_KEY);
+      localStorage.setItem(OWN_SETTINGS_KEY, JSON.stringify({ ...ownSettings(),
+        userName: el("setUserName").value.trim(), apiHost: el("apiHostOverride").value.trim() }));
+    } catch(e){}
+    goodToken = null;
+    closeSettings();
+    (el("regPanel").classList.contains("open") ? refreshRegister() : loadDrawingLabels()).catch(err => log("Kunde inte läsa om delade data:", err.message || err));
+  }
+  el("btnSettings").onclick = openSettings;
+  el("btnCloseSettings").onclick = () => { el("apiHostOverride").value = ownSettings().apiHost || ""; closeSettings(); };
+  el("btnSaveSettings").onclick = saveSettings;
+  el("btnTestToken").onclick = testToken;
+  el("btnShowToken").onclick = () => { el("setToken").type = el("setToken").type === "password" ? "text" : "password"; };
+  el("settingsDialog").addEventListener("click", e => { if(e.target === el("settingsDialog")) el("btnCloseSettings").onclick(); });
+  el("apiHostOverride").value = ownSettings().apiHost || "";
+
   function regUserName(){
+    const own = ownSettings().userName;
+    if(own) return own;
     for(const key of ["tcnotes-settings", "4dplan-settings"]){
       try { const n = (JSON.parse(localStorage.getItem(key) || "{}") || {}).userName; if(n) return n; } catch(e){}
     }
@@ -2341,6 +2424,7 @@ END-ISO-10303-21;
     if(latest){
       state.textContent = [placements[latest.id] ? "📐 inpassad" : "", isLoaded(latest) ? "● inläst" : latest._remembered ? "ej i Trimbles lista" : ""].filter(Boolean).join(" · ");
       head.appendChild(mkBtn(isLoaded(latest) ? "Zooma" : (grouped ? "Visa senaste" : "Visa i 3D"), grouped ? "Tänder den senaste revisionen och släcker äldre" : "", () => showLatest(g, meta)));
+      head.appendChild(mkBtn("🎯 Markera i 3D", "Markerar ritningen i 3D-vyn (tänds först om den är släckt)", () => markIn3d(latest, meta)));
       if(isDrawingModel(latest)) head.appendChild(mkBtn("⧉ Kopia", "Kopiera DWG:n för att passa in en detalj på ett annat ställe", () => createCopy(g, meta)));
       if(placements[latest.id]) head.appendChild(mkBtn("✕", "Glöm den sparade inpassningen (ritningen i Trimble påverkas inte)", () => {
         if(!confirm(`Glömma den sparade inpassningen för ${latest.name}?`)) return;
@@ -2430,6 +2514,7 @@ END-ISO-10303-21;
         line.appendChild(isLoaded(file)
           ? mkBtn("Zooma", "", () => API.viewer.setCamera({ modelObjectIds: [{ modelId: viewerIdOf(file) }] }, { animationTime: 600 }).catch(()=>{}))
           : mkBtn("Visa i 3D", "", async () => { await toggleModelSafe(file, true, meta); renderRegister(); }));
+        line.appendChild(mkBtn("🎯 Markera i 3D", "Markerar kopian i 3D-vyn", () => markIn3d(file, meta)));
         box.appendChild(line);
       });
       row.appendChild(box);
@@ -2451,6 +2536,19 @@ END-ISO-10303-21;
   }
 
   /* Tänder senaste revisionen (eller zoomar) och släcker äldre revisioner. */
+  /* Markerar hela ritningen/modellen i 3D-vyn och zoomar dit. Tänds först om den är släckt. */
+  async function markIn3d(file, meta){
+    try {
+      if(!isLoaded(file)){ await toggleModelSafe(file, true, meta); renderRegister(); }
+      const sel = { modelObjectIds: [{ modelId: viewerIdOf(file) }] };
+      await API.viewer.setSelection(sel, "set");
+      API.viewer.setCamera(sel, { animationTime: 600 }).catch(()=>{});
+    } catch(err){
+      log("Kunde inte markera i 3D:", err.message || err);
+      if(meta) meta.textContent = "⚠ Kunde inte markera i 3D: " + (err.message || err);
+    }
+  }
+
   async function showLatest(g, meta){
     const latest = g.latest;
     if(!latest) return;

@@ -1870,11 +1870,44 @@ END-ISO-10303-21;
   const regLabelMarkups = [];
   const regExpanded = new Set();
 
-  function regToken(){
-    for(const key of ["tcnotes-settings", "4dplan-settings"]){
-      try { const t = (JSON.parse(localStorage.getItem(key) || "{}") || {}).githubToken; if(t) return t; } catch(e){}
+  // GitHub-token: egen (angiven här) först, sedan 4D-planeringens och
+  // anteckningsappens. En token som GitHub avvisar (401, t.ex. utgången)
+  // hoppas över, så en förnyad token i 4D-planering räcker.
+  const OWN_TOKEN_KEY = "pdfoverlay-github-token";
+  let goodToken = null;
+  function regTokens(){
+    const out = [];
+    try { const t = localStorage.getItem(OWN_TOKEN_KEY); if(t) out.push(t); } catch(e){}
+    for(const key of ["4dplan-settings", "tcnotes-settings"]){
+      try { const t = (JSON.parse(localStorage.getItem(key) || "{}") || {}).githubToken; if(t && !out.includes(t)) out.push(t); } catch(e){}
     }
-    return null;
+    return out;
+  }
+  function regToken(){
+    return goodToken || regTokens()[0] || null;
+  }
+  /* Läser flera filer med första token som GitHub godkänner. */
+  async function ghReadWithAnyToken(paths){
+    const tokens = regTokens();
+    let lastErr = null;
+    for(const t of tokens){
+      try {
+        const res = await Promise.all(paths.map(p => ghReadJSON(t, p)));
+        goodToken = t;
+        return res;
+      } catch(err){
+        lastErr = err;
+        if(!/\b401\b/.test(err.message || "")) throw err;
+      }
+    }
+    throw lastErr || new Error("Ingen token");
+  }
+  function askForToken(){
+    const t = (prompt("GitHub-token för 4D-data (samma som i 4D-planering):") || "").trim();
+    if(!t) return;
+    try { localStorage.setItem(OWN_TOKEN_KEY, t); } catch(e){}
+    goodToken = null;
+    loadDrawingLabels();
   }
   function regUserName(){
     for(const key of ["tcnotes-settings", "4dplan-settings"]){
@@ -1923,16 +1956,26 @@ END-ISO-10303-21;
     let rows = [], copies = [];
     if(token && regProjectId){
       try {
-        [rows, copies] = await Promise.all([ghReadJSON(token, regPath()), ghReadJSON(token, copiesPath())]);
+        [rows, copies] = await ghReadWithAnyToken([regPath(), copiesPath()]);
         el("regStorage").textContent = "Namn, inpassningar och kopior delas med alla i projektet (4D-data).";
       } catch(err){
         log("Kunde inte läsa ritningsregistret:", err.message||err);
-        el("regStorage").textContent = "⚠ Kunde inte läsa delade data (" + (err.message||err) + "). Visar bara lokalt sparade.";
+        const is401 = /\b401\b/.test(err.message || "");
+        el("regStorage").innerHTML = "";
+        el("regStorage").append(is401
+          ? "⚠ GitHub godkänner inte token:en (401) – den har troligen gått ut. Visar bara lokalt sparade. "
+          : "⚠ Kunde inte läsa delade data (" + (err.message||err) + "). Visar bara lokalt sparade. ");
+        const b = document.createElement("button");
+        b.textContent = "🔑 Ange ny token"; b.onclick = askForToken;
+        el("regStorage").append(b);
         rows = localRows(REG_LOCAL_KEY); copies = localRows(COPIES_LOCAL_KEY);
       }
     } else {
       rows = localRows(REG_LOCAL_KEY); copies = localRows(COPIES_LOCAL_KEY);
-      el("regStorage").textContent = "Sparas bara i den här webbläsaren. Ange GitHub-token i 4D-planering eller anteckningsappen för att dela med projektet.";
+      el("regStorage").textContent = "Sparas bara i den här webbläsaren. Ange GitHub-token (samma som i 4D-planering) för att dela med projektet. ";
+      const b = document.createElement("button");
+      b.textContent = "🔑 Ange token"; b.onclick = askForToken;
+      el("regStorage").append(b);
     }
     drawingLabels = {};
     rows.forEach(r => { if(r && r.model_id) drawingLabels[r.model_id] = r; });

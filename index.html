@@ -17,7 +17,13 @@
   html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--text);font-size:13px;}
   #app{display:flex;flex-direction:column;height:100%;}
   header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
-  header h1{font-size:14px;margin:0;font-weight:600;}
+  header h1{font-size:16px;margin:0;font-weight:600;}
+  .header-brand{display:flex;align-items:center;gap:8px;}
+  .ncc-mark{flex:0 0 auto;font-weight:800;font-size:12px;letter-spacing:.02em;color:#fff;background:#0b5fff;padding:3px 6px;border-radius:3px;line-height:1;}
+  .header-titles{display:flex;flex-direction:column;line-height:1.15;}
+  .title-row{display:flex;align-items:center;gap:6px;}
+  .made-by{font-size:9px;color:var(--text-muted);}
+  .version-badge{font-size:9px;font-weight:600;color:var(--text-muted);background:var(--panel-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px;white-space:nowrap;}
   .status{font-size:11px;color:var(--text-muted);}
   .toolbar{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
   button{font:inherit;cursor:pointer;border:1px solid var(--border);background:#fff;padding:6px 10px;border-radius:8px;color:var(--text);}
@@ -102,7 +108,16 @@
 <body>
 <div id="app">
   <header>
-    <h1>🗺️ PDF-overlay</h1>
+    <div class="header-brand">
+      <span class="ncc-mark" title="NCC">NCC</span>
+      <div class="header-titles">
+        <div class="title-row">
+          <h1>PDF-overlay</h1>
+          <span class="version-badge" id="versionBadge" title="Senast uppdaterad (pushad till GitHub)"></span>
+        </div>
+        <span class="made-by">Made by: VFA</span>
+      </div>
+    </div>
     <span class="status" id="status">Ansluter…</span>
   </header>
 
@@ -382,6 +397,10 @@
 </div>
 
 <script>
+  // Visas i headern - räkna upp vid varje ändring (som i 4D-planering).
+  const APP_VERSION = "2026-09-28 10:15";
+  document.addEventListener("DOMContentLoaded", () => { const v = document.getElementById("versionBadge"); if(v) v.textContent = "Version " + APP_VERSION; });
+
 (function(){
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 

@@ -306,11 +306,10 @@
     </div>
 
     <div class="step disabled" id="dwgStepPairs">
-      <h3>Steg 2 — Referenspunkter (2 par)</h3>
+      <h3>Steg 2 — Referenspunkter (2 + 2 klick)</h3>
       <div class="hint">
-        För varje par: klicka först en punkt <b>på DWG:n</b> (t.ex. ett axelkryss), sedan
-        <b>samma punkt i modellen</b>. Två par räcker för att räkna ut vridning och förflyttning.
-        Välj punkter långt ifrån varandra för bäst precision.
+        Klicka först <b>två punkter på DWG:n</b> (t.ex. två axelkryss), sedan <b>samma två punkter
+        i modellen</b>, i samma ordning. Välj punkter långt ifrån varandra för bäst precision.
       </div>
       <div class="pillrow" id="dwgPills"></div>
       <div class="hint" id="dwgPairHint"></div>
@@ -1415,7 +1414,7 @@ END-ISO-10303-21;
     original: {},      // modelId -> placement innan vi rörde modellen (för Återställ)
     applied: {},       // modelId -> senast applicerad placement (getModels speglar inte alltid placeModel)
     base: null,        // placement när punktparen började klickas (punkterna är i den ramen)
-    pairs: [], pendingSrc: null,
+    pairs: [], srcPts: [], // srcPts: de två DWG-klicken; pairs fylls när målpunkterna klickas
     result: null,
     pickMode: null,    // null (punktpar) | "pivot" | "axis"
     pivot: null,       // egen vridpunkt {x,y,z} (m), annars standard
@@ -1543,7 +1542,7 @@ END-ISO-10303-21;
     dwgWizard.classList.add("open");
     await refreshDwgModels();
   };
-  el("btnDwgClose").onclick = () => { dwgWizard.classList.remove("open"); dwg.pendingSrc = null; };
+  el("btnDwgClose").onclick = () => { dwgWizard.classList.remove("open"); };
   el("btnDwgRefresh").onclick = () => refreshDwgModels();
 
   async function refreshDwgModels(){
@@ -1583,7 +1582,7 @@ END-ISO-10303-21;
     const spec = dwg.models.find(m => m.id === modelId);
     const saved = loadSavedPlacements()[modelId];
     const info = el("dwgModelInfo");
-    info.innerHTML = `Vald: <b>${(spec && spec.name || modelId).replace(/</g,"&lt;")}</b>. Klicka punktpar i Steg 2.`;
+    info.innerHTML = `Vald: <b>${(spec && spec.name || modelId).replace(/</g,"&lt;")}</b>. Klicka punkterna i Steg 2.`;
     if(saved){
       const b = document.createElement("button");
       b.className = "ghost"; b.textContent = "↺ Använd sparad placering";
@@ -1598,7 +1597,7 @@ END-ISO-10303-21;
   }
 
   function resetDwgPairs(){
-    dwg.pairs = []; dwg.pendingSrc = null; dwg.result = null;
+    dwg.pairs = []; dwg.srcPts = []; dwg.result = null;
     dwg.base = dwg.modelId ? currentPlacementOf(dwg.modelId) : null;
     // Ny bas = nuvarande placering, så alla justeringar börjar om från 0.
     ["dwgAdjX","dwgAdjY","dwgAdjZ"].forEach(id => el(id).value = 0);
@@ -1609,8 +1608,8 @@ END-ISO-10303-21;
   }
   el("btnDwgClear").onclick = () => resetDwgPairs();
   el("btnDwgUndo").onclick = () => {
-    if(dwg.pendingSrc) dwg.pendingSrc = null;
-    else if(dwg.pairs.length){ const last = dwg.pairs.pop(); dwg.pendingSrc = last.src; }
+    if(dwg.pairs.length) dwg.pairs.pop();
+    else dwg.srcPts.pop();
     renderDwgPairs();
     scheduleDwgApply();
   };
@@ -1618,33 +1617,33 @@ END-ISO-10303-21;
   function renderDwgPairs(){
     const wrap = el("dwgPills");
     wrap.innerHTML = "";
-    for(let i = 0; i < 2; i++){
-      const done = i < dwg.pairs.length, half = i === dwg.pairs.length && dwg.pendingSrc;
+    const steps = ["DWG 1", "DWG 2", "Modell 1", "Modell 2"];
+    const n = dwg.srcPts.length + dwg.pairs.length;
+    steps.forEach((label, i) => {
       const pill = document.createElement("span");
-      pill.className = "pill" + (done ? " on" : "");
-      pill.textContent = `Par ${i+1}${done ? " ✓" : half ? " (DWG ✓)" : ""}`;
+      pill.className = "pill" + (i < n ? " on" : "");
+      pill.textContent = label + (i < n ? " ✓" : "");
       wrap.appendChild(pill);
-    }
+    });
     const h = el("dwgPairHint");
-    if(dwg.pairs.length >= 2) h.textContent = "Båda paren klara — DWG:n är inriktad. Finjustera i Steg 3.";
-    else if(dwg.pendingSrc) h.innerHTML = `Klicka nu <b>samma punkt i modellen</b> (par ${dwg.pairs.length+1}).`;
-    else h.innerHTML = `Klicka en punkt <b>på DWG:n</b> i 3D-vyn (par ${dwg.pairs.length+1}).`;
+    if(dwg.pairs.length >= 2) h.textContent = "Alla punkter klara — DWG:n är inriktad. Finjustera i Steg 3.";
+    else if(dwg.srcPts.length >= 2) h.innerHTML = `Klicka nu <b>punkt ${dwg.pairs.length+1} i modellen</b> — samma ställe som DWG-punkt ${dwg.pairs.length+1}.`;
+    else h.innerHTML = `Klicka <b>punkt ${dwg.srcPts.length+1} av 2 på DWG:n</b> i 3D-vyn.`;
   }
 
   function onDwgPick(point){
     const p = { x: point.xMM/1000, y: point.yMM/1000, z: point.zMM/1000, modelId: point.modelId };
-    if(!dwg.pendingSrc){
-      dwg.pendingSrc = p;
+    if(dwg.srcPts.length < 2){
+      dwg.srcPts.push(p);
       if(p.modelId && p.modelId !== dwg.modelId){
         const other = dwg.models.find(m => m.id === p.modelId);
         el("dwgPairHint").innerHTML = `⚠ Punkten hamnade på <b>${(other && other.name || "en annan modell").replace(/</g,"&lt;")}</b>, inte på den valda DWG:n. `
-          + `Ångra och klicka direkt på en linje i DWG:n (dölj gärna andra modeller tillfälligt). Klicka annars samma punkt i modellen.`;
+          + `Ångra och klicka direkt på en linje i DWG:n (dölj gärna andra modeller tillfälligt). Fortsätt annars med nästa punkt.`;
         renderDwgPairsPillsOnly();
         return;
       }
     } else {
-      dwg.pairs.push({ src: dwg.pendingSrc, dst: p });
-      dwg.pendingSrc = null;
+      dwg.pairs.push({ src: dwg.srcPts[dwg.pairs.length], dst: p });
       if(dwg.pairs.length >= 2){
         applyDwgAlignment();
         renderPivotInfo();
@@ -1862,7 +1861,7 @@ END-ISO-10303-21;
     if(!dwg.modelId) return;
     const pairs = dwg.pairs;
     dwg.base = currentPlacementOf(dwg.modelId);
-    dwg.pairs = []; dwg.pendingSrc = null;
+    dwg.pairs = []; dwg.srcPts = [];
     ["dwgAdjX","dwgAdjY","dwgAdjZ"].forEach(id => el(id).value = 0);
     ["X","Y","Z","L"].forEach(k => { el("dwgRot"+k).value = 0; el("dwgRot"+k+"n").value = 0; });
     if(pairs.length >= 2){

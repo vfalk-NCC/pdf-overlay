@@ -81,9 +81,10 @@ Flyttar och vrider en inläst modell (DWG, DXF eller IFC) direkt i vyn med
 
 1. Öppna DWG:n i 3D-vyn och klicka **📐 Vrid in DWG/modell**. Välj
    modellen (ritningar listas först).
-2. Klicka två punktpar: först en punkt **på DWG:n**, till exempel ett
-   axelkryss, sedan **samma punkt i modellen**. Välj punkter långt ifrån
-   varandra.
+2. Klicka först **två punkter på DWG:n**, till exempel två axelkryss,
+   sedan **samma två punkter i modellen** i samma ordning. Du slipper
+   alltså hoppa fram och tillbaka mellan DWG och modell. Välj punkter
+   långt ifrån varandra.
 3. Appen räknar ut vridning och förflyttning, så att punkternas mittpunkt
    sammanfaller, och flyttar DWG:n direkt. Den visar också kvarvarande
    avvikelse per par.

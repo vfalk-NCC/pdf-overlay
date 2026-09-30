@@ -42,6 +42,8 @@
   button:hover:not(:disabled){filter:brightness(0.97);}
   button:disabled{opacity:.5;cursor:not-allowed;}
 
+  .auto-move-banner{margin:6px 0;padding:8px;border:1px solid #f0b400;background:#fff8e1;border-radius:6px;font-size:12px;}
+  .auto-move-banner .row-btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
   .hint{font-size:11.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.4;}
   .row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;}
   .row > div{flex:1;min-width:0;}
@@ -163,6 +165,7 @@
     <button class="primary" id="btnRegister">🏷️ Ritningsregister</button>
     <button class="ghost" id="btnDebugToggle">🐞 Rådata</button>
   </div>
+  <div class="box auto-move-banner" id="autoMoveBanner" style="display:none;"></div>
 
   <div class="wizard" id="wizard">
 
@@ -303,6 +306,11 @@
         <button class="ghost" id="btnDwgClose">Stäng</button>
       </div>
       <div class="hint" id="dwgModelInfo" style="margin-top:6px;"></div>
+      <div class="hint" style="margin-top:6px;">
+        <label><input type="checkbox" id="dwgAutoApplyAll" checked> Lägg på sparade inpassningar automatiskt när en modell läses in</label><br/>
+        3D-modeller (IFC m.fl.) flyttas bara automatiskt om du kryssat i det för just den modellen nedan.
+        Varje automatisk flytt visas överst med en knapp för att ångra.
+      </div>
     </div>
 
     <div class="step disabled" id="dwgStepPairs">
@@ -381,7 +389,8 @@
       </div>
       <div class="hint" style="margin-top:6px;">
         Placeringen görs med <code>viewer.placeModel</code> och gäller den här visningen. Den sparas i
-        webbläsaren och läggs på igen nästa gång du öppnar tillägget ("Använd sparad placering"). För att
+        webbläsaren och delat i projektet. Ritningar (DWG/DXF) får den pålagd automatiskt när de läses in;
+        3D-modeller bara om du kryssat i "Lägg på automatiskt" i Steg 1 (annars via "Använd sparad placering"). För att
         spara den permanent för alla i projektet: för över värdena ovan till Trimble Connects
         <b>Positionsinställningar</b> för modellen.
       </div>
@@ -429,7 +438,7 @@
 
 <script>
   // Visas i headern - räkna upp vid varje ändring (som i 4D-planering).
-  const APP_VERSION = "2026-09-28 11:00";
+  const APP_VERSION = "2026-09-30 16:00";
   document.addEventListener("DOMContentLoaded", () => { const v = document.getElementById("versionBadge"); if(v) v.textContent = "Version " + APP_VERSION; });
 
 (function(){
@@ -1442,7 +1451,8 @@ END-ISO-10303-21;
     let rec = null;
     try {
       const all = loadSavedPlacements();
-      rec = all[modelId] = { ...placement, _name: (spec && spec.name) || (all[modelId] && all[modelId]._name) || null, _saved_at: new Date().toISOString() };
+      const prevAuto = all[modelId] && typeof all[modelId].auto === "boolean" ? { auto: all[modelId].auto } : {};
+      rec = all[modelId] = { ...prevAuto, ...placement, _name: (spec && spec.name) || (all[modelId] && all[modelId]._name) || null, _saved_at: new Date().toISOString() };
       localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all));
     } catch(e){}
     if(rec) scheduleSharedPlacementSave(modelId, rec);
@@ -1497,11 +1507,65 @@ END-ISO-10303-21;
     } catch(err){ log("Kunde inte läsa delade inpassningar:", err.message||err); }
   }
 
+  /* Skydd mot oönskade automatiska flyttar (Victors önskemål 2026-09-30:
+     NSV_SWEREF_Bygg.IFC hoppade tillbaka till fel läge efter att ha
+     nollställts i Positionsinställningar, eftersom en gammal sparad
+     inpassning lades på igen varje gång modellen lästes in).
+     - Bara ritningar (DWG/DXF) får sin inpassning pålagd automatiskt som
+       standard. En 3D-modell (IFC m.fl.) flyttas automatiskt bara om man
+       kryssat i "Lägg på automatiskt" för just den modellen (flaggan auto).
+     - Allt automatiskt kan stängas av helt (dwgAutoApplyAll).
+     - Varje automatisk flytt visas överst med "Ångra och sluta flytta". */
+  const AUTO_OFF_KEY = "pdfoverlay-autoapply-off";
+  const isDrawingName = (name, type) => /\.(dwg|dxf)$/i.test(name || "") || /dwg|dxf/i.test(type || "");
+  function autoApplyEnabled(){ try { return localStorage.getItem(AUTO_OFF_KEY) !== "1"; } catch(e){ return true; } }
+  function placementAuto(rec, m){
+    if(rec && typeof rec.auto === "boolean") return rec.auto;
+    return isDrawingName((m && m.name) || (rec && rec._name), m && m.type);
+  }
+  /* Ändrar bara auto-flaggan på en sparad inpassning (sparas lokalt och delat). */
+  function setPlacementAuto(modelId, auto){
+    const all = loadSavedPlacements();
+    const rec = all[modelId];
+    if(!rec) return;
+    rec.auto = !!auto; rec._saved_at = new Date().toISOString();
+    try { localStorage.setItem(DWG_STORE_KEY, JSON.stringify(all)); } catch(e){}
+    scheduleSharedPlacementSave(modelId, rec);
+  }
+  const autoMoves = [];   // [{ modelId, name, before, savedAt, by }]
+  function renderAutoMoveBanner(){
+    const b = el("autoMoveBanner");
+    if(!b) return;
+    if(!autoMoves.length){ b.style.display = "none"; b.innerHTML = ""; return; }
+    b.style.display = "block"; b.innerHTML = "";
+    autoMoves.forEach((mv, i) => {
+      const box = document.createElement("div");
+      if(i) box.style.marginTop = "8px";
+      const t = document.createElement("div");
+      t.innerHTML = `⚠ <b>${String(mv.name).replace(/</g,"&lt;")}</b> flyttades automatiskt enligt en sparad inpassning${mv.savedAt ? ` (sparad ${String(mv.savedAt).slice(0,10)})` : ""}.`;
+      const row = document.createElement("div"); row.className = "row-btns";
+      const undo = document.createElement("button"); undo.className = "primary";
+      undo.textContent = "↶ Ångra och sluta flytta den";
+      undo.title = "Lägger tillbaka modellen där den låg innan och stänger av automatisk inpassning för den. Den sparade inpassningen finns kvar och kan läggas på manuellt i 📐 Vrid in.";
+      undo.onclick = async () => {
+        try { await API.viewer.placeModel(mv.modelId, clonePlacement(mv.before)); dwg.applied[mv.modelId] = clonePlacement(mv.before); }
+        catch(err){ log("Kunde inte ångra flytten:", err.message||err); }
+        setPlacementAuto(mv.modelId, false);
+        autoMoves.splice(autoMoves.indexOf(mv), 1); renderAutoMoveBanner();
+        if(dwg.modelId === mv.modelId) selectDwgModel(mv.modelId);
+      };
+      const ok = document.createElement("button"); ok.className = "ghost";
+      ok.textContent = "OK, den ska ligga så";
+      ok.onclick = () => { autoMoves.splice(autoMoves.indexOf(mv), 1); renderAutoMoveBanner(); };
+      row.append(undo, ok); box.append(t, row); b.appendChild(box);
+    });
+  }
+
   const autoApplied = new Set();     // modeller vi redan lagt på placering för i nuvarande inläsning
   let autoApplyTimer = null;
   function scheduleAutoApply(){ clearTimeout(autoApplyTimer); autoApplyTimer = setTimeout(autoApplyPlacements, 700); }
   async function autoApplyPlacements(){
-    if(!API) return;
+    if(!API || !autoApplyEnabled()) return;
     let loaded = [];
     try { loaded = await API.viewer.getModels("loaded"); } catch(e){ return; }
     const loadedIds = new Set((loaded||[]).map(m => m.id));
@@ -1513,7 +1577,7 @@ END-ISO-10303-21;
       let pl = saved[m.id], inherited = null;
       // Ny revision (ny fil med samma ritningsnummer, t.ex. i en ny PM-mapp)
       // utan egen inpassning: ärv den senast sparade från en tidigare revision.
-      if(!pl && !copyIds.has(m.id) && m.name){
+      if(!pl && !copyIds.has(m.id) && m.name && isDrawingName(m.name, m.type)){
         const key = drawingKey(m.name);
         const prev = Object.entries(saved)
           .filter(([id, p]) => id !== m.id && !copyIds.has(id) && p && p._name && drawingKey(p._name) === key)
@@ -1522,8 +1586,13 @@ END-ISO-10303-21;
       }
       if(!pl) continue;
       autoApplied.add(m.id);
+      if(!placementAuto(pl, m)){ log("Sparad inpassning finns men läggs inte på automatiskt:", m.name || m.id); continue; }
+      const before = clonePlacement(dwg.applied[m.id] || m.placement);
       try {
         await API.viewer.placeModel(m.id, clonePlacement(pl));
+        autoMoves.splice(0, autoMoves.length, ...autoMoves.filter(x => x.modelId !== m.id));
+        autoMoves.push({ modelId: m.id, name: m.name || m.id, before, savedAt: pl._saved_at });
+        renderAutoMoveBanner();
         dwg.applied[m.id] = clonePlacement(pl);
         if(inherited){
           const { _name, _saved_at, ...rest } = pl;
@@ -1544,6 +1613,11 @@ END-ISO-10303-21;
   };
   el("btnDwgClose").onclick = () => { dwgWizard.classList.remove("open"); };
   el("btnDwgRefresh").onclick = () => refreshDwgModels();
+  el("dwgAutoApplyAll").checked = autoApplyEnabled();
+  el("dwgAutoApplyAll").onchange = () => {
+    try { localStorage.setItem(AUTO_OFF_KEY, el("dwgAutoApplyAll").checked ? "0" : "1"); } catch(e){}
+    if(el("dwgAutoApplyAll").checked){ autoApplied.clear(); scheduleAutoApply(); }
+  };
 
   async function refreshDwgModels(){
     const sel = el("dwgModelSelect");
@@ -1589,6 +1663,20 @@ END-ISO-10303-21;
       b.onclick = async () => { await applyPlacement(modelId, clonePlacement(saved)); resetDwgPairs(); info.lastChild && (info.lastChild.textContent = "✓ Sparad placering tillagd"); };
       info.appendChild(document.createElement("br"));
       info.appendChild(b);
+      const f = document.createElement("button");
+      f.className = "ghost"; f.textContent = "🗑 Glöm sparad inpassning";
+      f.title = "Tar bort den sparade inpassningen för modellen (för alla i projektet), så att den aldrig läggs på igen. Modellen flyttas inte nu.";
+      f.onclick = () => {
+        if(!confirm(`Glöm den sparade inpassningen för ${(spec && spec.name) || "modellen"}? Den läggs då aldrig på igen, för någon i projektet.`)) return;
+        forgetPlacement(modelId); selectDwgModel(modelId);
+      };
+      info.appendChild(f);
+      const lab = document.createElement("label");
+      lab.style.display = "block"; lab.style.marginTop = "4px";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = placementAuto(saved, spec);
+      cb.onchange = () => setPlacementAuto(modelId, cb.checked);
+      lab.append(cb, " Lägg på automatiskt när modellen läses in");
+      info.appendChild(lab);
     }
     el("dwgStepPairs").classList.remove("disabled");
     el("dwgStepAdjust").classList.remove("disabled");
